@@ -114,7 +114,7 @@ public:
   /* \brief Returns the angle in radians of the BoundingBox. 0 if pose estimation was not enabled. */
   double GetOrientationAngle();
   /* \brief Returns the Length of the Cluster */
-  float GetLenght();
+  float GetLength();
   /* \brief Returns the Width of the Cluster */
   float GetWidth();
   /* \brief Returns the Height of the Cluster */

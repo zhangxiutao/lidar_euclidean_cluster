@@ -16,6 +16,7 @@
 #include <pcl/ModelCoefficients.h>
 #include <pcl/point_types.h>
 
+#include <pcl/filters/radius_outlier_removal.h>
 #include <pcl/filters/extract_indices.h>
 #include <pcl/filters/voxel_grid.h>
 #include <pcl/filters/conditional_removal.h>
@@ -90,7 +91,7 @@ ros::Publisher _pub_ground_cloud;
 ros::Publisher _centroid_pub;
 
 ros::Publisher _pub_clusters_message;
-
+ros::Publisher _pub_leitbakes_cloud;
 ros::Publisher _pub_points_lanes_cloud;
 
 ros::Publisher _pub_detected_objects;
@@ -99,6 +100,8 @@ std_msgs::Header _velodyne_header;
 
 std::string _output_frame;
 
+static double _radius_outlier_removal;
+static int _neighbours_outlier_removal;
 static bool _velodyne_transform_available;
 static bool _downsample_cloud;
 static bool _pose_estimation;
@@ -109,7 +112,7 @@ static const double _initial_quat_w = 1.0;
 static double _ransac_height;
 static double _ransac_angle;
 static bool _remove_ground;  // only ground
-
+static double _min_cluster_height;
 static bool _using_sensor_cloud;
 static bool _use_diffnormals;
 
@@ -172,6 +175,60 @@ geometry_msgs::Point transformPoint(const geometry_msgs::Point& point, const tf:
 
   return ros_point;
 }
+
+// void pickLeitbakes(const autoware_msgs::CloudClusterArray clusters_msg, const pcl::PointCloud<pcl::PointXYZRGB>::Ptr leitbakes_cloud_ptr)
+// {
+//   double height_cluster;
+
+//   for (auto& cluster_msg:clusters_msg.clusters)
+//   {
+//     pcl::PCLPointCloud2 pcl_pc2;
+//     pcl_conversions::toPCL(clusters_msg.clusters.cloud,pcl_pc2);
+//     pcl::PointCloud<pcl::PointXYZ>::Ptr cluster_cloud_ptr(new pcl::PointCloud<pcl::PointXYZ>);
+//     pcl::fromPCLPointCloud2(pcl_pc2,*cluster_cloud_ptr);
+//     ClusterPtr cluster(new Cluster());
+
+//     cluster->SetCloud(cluster_cloud_ptr, it->points_in_cluster, _velodyne_header, k, (int) _colors[k].val[0],
+//                       (int) _colors[k].val[1], (int) _colors[k].val[2], "", _pose_estimation);
+//     if (cluster->GetHeight() >= 0.3)
+//     {    
+//       (*leitbakes_cloud_ptr) += (*cluster->GetCloud());
+//       pcl::toROSMsg(*leitbakes_cloud_ptr, cloud_msg);
+//     }
+//   }
+// }
+void outlierRemoval(const pcl::PointCloud<pcl::PointXYZ>::Ptr in_cloud_ptr,
+                    pcl::PointCloud<pcl::PointXYZ>::Ptr out_cloud_ptr)
+{
+    pcl::RadiusOutlierRemoval<pcl::PointXYZ> rorfilter (false); // Initializing with true will allow us to extract the removed indices
+    rorfilter.setInputCloud (in_cloud_ptr);
+    ros::param::get("/lidar_euclidean_cluster_detect/radius_outlier_removal", _radius_outlier_removal);
+    ros::param::get("/lidar_euclidean_cluster_detect/neighbours_outlier_removal", _neighbours_outlier_removal);
+    rorfilter.setRadiusSearch (_radius_outlier_removal);
+    rorfilter.setMinNeighborsInRadius (_neighbours_outlier_removal);
+    rorfilter.setNegative (true);
+    rorfilter.filter (*out_cloud_ptr);
+    // The resulting cloud_out contains all points of cloud_in that have 4 or less neighbors within the 0.1 search radius
+    //indices_rem = rorfilter.getRemovedIndices ();
+    // The indices_rem array indexes all points of cloud_in that have 5 or more neighbors within the 0.1 search radius
+}
+
+void intensityFilter(const pcl::PointCloud<pcl::PointXYZI>::Ptr in_cloud_ptr,
+                    pcl::PointCloud<pcl::PointXYZ>::Ptr out_cloud_ptr)
+{
+    for (unsigned int i = 0; i < in_cloud_ptr->points.size(); i++)
+    {
+        if (in_cloud_ptr->points[i].intensity > 300)
+        {
+            pcl::PointXYZ current_point;
+            current_point.x = in_cloud_ptr->points[i].x;
+            current_point.y = in_cloud_ptr->points[i].y;
+            current_point.z = in_cloud_ptr->points[i].z;
+            out_cloud_ptr->points.push_back(current_point);
+        }
+    }    
+}
+
 
 void transformBoundingBox(const jsk_recognition_msgs::BoundingBox &in_boundingbox,
                           jsk_recognition_msgs::BoundingBox &out_boundingbox, const std::string &in_target_frame,
@@ -267,7 +324,8 @@ void publishCloudClusters(const ros::Publisher *in_publisher, const autoware_msg
       }
     }
     in_publisher->publish(clusters_transformed);
-    publishDetectedObjects(clusters_transformed);
+    
+    (clusters_transformed);
   } else
   {
     in_publisher->publish(in_clusters);
@@ -381,30 +439,30 @@ std::vector<ClusterPtr> clusterAndColorGpu(const pcl::PointCloud<pcl::PointXYZ>:
   }
 
   GpuEuclideanCluster gecl_cluster;
-
   gecl_cluster.setInputPoints(tmp_x, tmp_y, tmp_z, size);
   gecl_cluster.setThreshold(in_max_cluster_distance);
   gecl_cluster.setMinClusterPts(_cluster_size_min);
   gecl_cluster.setMaxClusterPts(_cluster_size_max);
   gecl_cluster.extractClusters();
   std::vector<GpuEuclideanCluster::GClusterIndex> cluster_indices = gecl_cluster.getOutput();
-
   unsigned int k = 0;
-
   for (auto it = cluster_indices.begin(); it != cluster_indices.end(); it++)
   {
     ClusterPtr cluster(new Cluster());
     cluster->SetCloud(in_cloud_ptr, it->points_in_cluster, _velodyne_header, k, (int) _colors[k].val[0],
                       (int) _colors[k].val[1], (int) _colors[k].val[2], "", _pose_estimation);
-    clusters.push_back(cluster);
+    ros::param::get("/lidar_euclidean_cluster_detect/min_cluster_height",_min_cluster_height);
+    if (cluster->GetHeight() >= _min_cluster_height && cluster->GetWidth() <= 1 && cluster->GetLength() <= 0.8)
+    {
+      clusters.push_back(cluster);
+    }
 
+    
     k++;
   }
-
   free(tmp_x);
   free(tmp_y);
   free(tmp_z);
-
   return clusters;
 }
 
@@ -558,7 +616,7 @@ void segmentByDistance(const pcl::PointCloud<pcl::PointXYZ>::Ptr in_cloud_ptr,
   // 2 => 30-45 d=1.6
   // 3 => 45-60 d=2.1
   // 4 => >60   d=2.6
-
+  ROS_INFO("segmentByDistance in cloud size = %d",in_cloud_ptr->points.size());
   std::vector<ClusterPtr> all_clusters;
 
   if (!_use_multiple_thres)
@@ -583,6 +641,7 @@ void segmentByDistance(const pcl::PointCloud<pcl::PointXYZ>::Ptr in_cloud_ptr,
 #ifdef GPU_CLUSTERING
     if (_use_gpu)
     {
+      ROS_INFO("-1");
       all_clusters = clusterAndColorGpu(cloud_ptr, out_cloud_ptr, in_out_centroids,
                                         _clustering_distance);
     } else
@@ -637,6 +696,7 @@ void segmentByDistance(const pcl::PointCloud<pcl::PointXYZ>::Ptr in_cloud_ptr,
     std::vector<ClusterPtr> local_clusters;
     for (unsigned int i = 0; i < cloud_segments_array.size(); i++)
     {
+      ROS_INFO("1");
 #ifdef GPU_CLUSTERING
       if (_use_gpu)
       {
@@ -670,7 +730,7 @@ void segmentByDistance(const pcl::PointCloud<pcl::PointXYZ>::Ptr in_cloud_ptr,
     checkAllForMerge(mid_clusters, final_clusters, _cluster_merge_threshold);
   else
     final_clusters = mid_clusters;
-    ROS_INFO("21321323");
+
     // Get final PointCloud to be published
     for (unsigned int i = 0; i < final_clusters.size(); i++)
     {
@@ -734,7 +794,7 @@ void removeFloor(const pcl::PointCloud<pcl::PointXYZ>::Ptr in_cloud_ptr,
   seg.setMethodType(pcl::SAC_RANSAC);
   seg.setMaxIterations(100);
   seg.setAxis(Eigen::Vector3f(0, 0, 1));
-  seg.setEpsAngle(pcl::deg2rad(in_floor_max_angle));
+  // seg.setEpsAngle(pcl::deg2rad(in_floor_max_angle)); //largest angle inside which plane can shake
 
   seg.setDistanceThreshold(in_max_height);  // floor distance
   seg.setOptimizeCoefficients(true);
@@ -752,7 +812,7 @@ void removeFloor(const pcl::PointCloud<pcl::PointXYZ>::Ptr in_cloud_ptr,
   extract.setIndices(inliers);
   extract.setNegative(true);  // true removes the indices, false leaves only the indices
   extract.filter(*out_nofloor_cloud_ptr);
-
+  ROS_INFO("out_nofloor_cloud_ptr->points.size()=%d",out_nofloor_cloud_ptr->points.size());
   // EXTRACT THE FLOOR FROM THE CLOUD
   extract.setNegative(false);  // true removes the indices, false leaves only the indices
   extract.filter(*out_onlyfloor_cloud_ptr);
@@ -867,30 +927,34 @@ void velodyne_callback(const sensor_msgs::PointCloud2ConstPtr& in_sensor_cloud)
   {
     _using_sensor_cloud = true;
 
-    pcl::PointCloud<pcl::PointXYZ>::Ptr current_sensor_cloud_ptr(new pcl::PointCloud<pcl::PointXYZ>);
+    pcl::PointCloud<pcl::PointXYZI>::Ptr current_sensor_cloud_ptr(new pcl::PointCloud<pcl::PointXYZI>);
     pcl::PointCloud<pcl::PointXYZ>::Ptr removed_points_cloud_ptr(new pcl::PointCloud<pcl::PointXYZ>);
     pcl::PointCloud<pcl::PointXYZ>::Ptr downsampled_cloud_ptr(new pcl::PointCloud<pcl::PointXYZ>);
+    pcl::PointCloud<pcl::PointXYZ>::Ptr outlier_removed_cloud_ptr(new pcl::PointCloud<pcl::PointXYZ>);
+    pcl::PointCloud<pcl::PointXYZ>::Ptr intensity_filtered_cloud_ptr(new pcl::PointCloud<pcl::PointXYZ>);
     pcl::PointCloud<pcl::PointXYZ>::Ptr inlanes_cloud_ptr(new pcl::PointCloud<pcl::PointXYZ>);
     pcl::PointCloud<pcl::PointXYZ>::Ptr nofloor_cloud_ptr(new pcl::PointCloud<pcl::PointXYZ>);
     pcl::PointCloud<pcl::PointXYZ>::Ptr onlyfloor_cloud_ptr(new pcl::PointCloud<pcl::PointXYZ>);
     pcl::PointCloud<pcl::PointXYZ>::Ptr diffnormals_cloud_ptr(new pcl::PointCloud<pcl::PointXYZ>);
     pcl::PointCloud<pcl::PointXYZ>::Ptr clipped_cloud_ptr(new pcl::PointCloud<pcl::PointXYZ>);
     pcl::PointCloud<pcl::PointXYZRGB>::Ptr colored_clustered_cloud_ptr(new pcl::PointCloud<pcl::PointXYZRGB>);
+    // pcl::PointCloud<pcl::PointXYZRGB>::Ptr leitbake_clusters_ptr(new pcl::PointCloud<pcl::PointXYZRGB>);
 
     autoware_msgs::Centroids centroids;
     autoware_msgs::CloudClusterArray cloud_clusters;
 
     pcl::fromROSMsg(*in_sensor_cloud, *current_sensor_cloud_ptr);
-    ROS_INFO("current_sensor_cloud_ptr size=%d",current_sensor_cloud_ptr->points.size());
+    
     _velodyne_header = in_sensor_cloud->header;
-
+    intensityFilter(current_sensor_cloud_ptr, intensity_filtered_cloud_ptr);
+    
     if (_remove_points_upto > 0.0)
     {
-      removePointsUpTo(current_sensor_cloud_ptr, removed_points_cloud_ptr, _remove_points_upto); //remove points near
+      removePointsUpTo(intensity_filtered_cloud_ptr, removed_points_cloud_ptr, _remove_points_upto); //remove points near
     }
     else
     {
-      removed_points_cloud_ptr = current_sensor_cloud_ptr;
+      removed_points_cloud_ptr = intensity_filtered_cloud_ptr;
     }
 
     if (_downsample_cloud)
@@ -898,7 +962,9 @@ void velodyne_callback(const sensor_msgs::PointCloud2ConstPtr& in_sensor_cloud)
     else
       downsampled_cloud_ptr = removed_points_cloud_ptr;
 
-    clipCloud(downsampled_cloud_ptr, clipped_cloud_ptr, _clip_min_height, _clip_max_height); //clip according to z axis
+    outlierRemoval(downsampled_cloud_ptr, outlier_removed_cloud_ptr);    
+    
+    clipCloud(outlier_removed_cloud_ptr, clipped_cloud_ptr, _clip_min_height, _clip_max_height); //clip according to z axis
 
     if (_keep_lanes)
       keepLanePoints(clipped_cloud_ptr, inlanes_cloud_ptr, _keep_lane_left_distance, _keep_lane_right_distance); //clip according to y axis
@@ -922,9 +988,11 @@ void velodyne_callback(const sensor_msgs::PointCloud2ConstPtr& in_sensor_cloud)
       differenceNormalsSegmentation(nofloor_cloud_ptr, diffnormals_cloud_ptr);
     else
       diffnormals_cloud_ptr = nofloor_cloud_ptr;
+
+    
     segmentByDistance(diffnormals_cloud_ptr, colored_clustered_cloud_ptr, centroids,
                       cloud_clusters);
-    publishColorCloud(&_pub_cluster_cloud, colored_clustered_cloud_ptr);
+    publishColorCloud(&_pub_cluster_cloud, colored_clustered_cloud_ptr); //colored_clustered_cloud_ptr and cloud_clusters difference?
 
     centroids.header = _velodyne_header;
 
@@ -932,7 +1000,12 @@ void velodyne_callback(const sensor_msgs::PointCloud2ConstPtr& in_sensor_cloud)
 
     cloud_clusters.header = _velodyne_header;
 
-    publishCloudClusters(&_pub_clusters_message, cloud_clusters, _output_frame, _velodyne_header);
+    publishCloudClusters(&_pub_clusters_message, cloud_clusters, _output_frame, _velodyne_header); //autoware_msgs::CloudClusterArray
+
+    //pick clusters of leitbakes
+    // pickLeitbakes(cloud_clusters, leitbake_clusters_ptr);
+    //publish cloud of clusters of leitbakes
+    // publishColorCloud(&_pub_leitbakes_cloud, leitbake_clusters_ptr);
 
     _using_sensor_cloud = false;
   }
@@ -991,14 +1064,16 @@ int main(int argc, char **argv)
       ROS_INFO("Euclidean Clustering: Difference of Normals will not be used.");
   }
 
-  /* Initialize tuning parameter */
+ /* Initialize tuning parameter */
+  private_nh.param("min_cluster_height", _min_cluster_height, 0.1);
+  ROS_INFO("[%s] min_cluster_height: %f", __APP_NAME__, _min_cluster_height);
   private_nh.param("ransac_height", _ransac_height, 1.0);
   ROS_INFO("[%s] ransac_height: %f", __APP_NAME__, _ransac_height);
   private_nh.param("ransac_angle", _ransac_angle, 20.0);
   ROS_INFO("[%s] ransac_angle: %f", __APP_NAME__, _ransac_angle);  
-  private_nh.param("downsample_cloud", _downsample_cloud, false);
+  private_nh.param("downsample_cloud", _downsample_cloud, true);
   ROS_INFO("[%s] downsample_cloud: %d", __APP_NAME__, _downsample_cloud);
-  private_nh.param("remove_ground", _remove_ground, true);
+  private_nh.param("remove_ground", _remove_ground, false);
   ROS_INFO("[%s] remove_ground: %d", __APP_NAME__, _remove_ground);
   private_nh.param("leaf_size", _leaf_size, 0.1);
   ROS_INFO("[%s] leaf_size: %f", __APP_NAME__, _leaf_size);
@@ -1022,7 +1097,7 @@ int main(int argc, char **argv)
   ROS_INFO("[%s] max_boundingbox_side: %f", __APP_NAME__, _max_boundingbox_side);
   private_nh.param("cluster_merge_threshold", _cluster_merge_threshold, 1.5);
   ROS_INFO("[%s] cluster_merge_threshold: %f", __APP_NAME__, _cluster_merge_threshold);
-  private_nh.param<std::string>("output_frame", _output_frame, "velodyne");
+  private_nh.param<std::string>("output_frame", _output_frame, "os1_lidar");
   ROS_INFO("[%s] output_frame: %s", __APP_NAME__, _output_frame.c_str());
 
   private_nh.param("remove_points_upto", _remove_points_upto, 0.0);
@@ -1031,7 +1106,7 @@ int main(int argc, char **argv)
   private_nh.param("clustering_distance", _clustering_distance, 0.75);
   ROS_INFO("[%s] clustering_distance: %f", __APP_NAME__, _clustering_distance);
 
-  private_nh.param("use_gpu", _use_gpu, false);
+  private_nh.param("use_gpu", _use_gpu, true);
   ROS_INFO("[%s] use_gpu: %d", __APP_NAME__, _use_gpu);
 
   private_nh.param("use_multiple_thres", _use_multiple_thres, false);

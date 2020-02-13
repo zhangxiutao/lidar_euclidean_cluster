@@ -230,8 +230,10 @@ void Cluster::SetCloud(const pcl::PointCloud<pcl::PointXYZ>::Ptr in_origin_cloud
     for (size_t i = 0; i < hull.size() + 1; i++)
     {
       geometry_msgs::Point32 point;
-      point.x = hull[i % hull.size()].x;
-      point.y = hull[i % hull.size()].y;
+      point.x = (hull.size()<=0) ? 0 : hull[i % hull.size()].x;
+      // point.x = hull[i % hull.size()].x;
+      point.y = (hull.size()<=0) ? 0 : hull[i % hull.size()].y;
+      //point.y = hull[i % hull.size()].y;
       point.z = min_point_.z;
       polygon_.polygon.points.push_back(point);
     }
@@ -239,8 +241,10 @@ void Cluster::SetCloud(const pcl::PointCloud<pcl::PointXYZ>::Ptr in_origin_cloud
     for (size_t i = 0; i < hull.size() + 1; i++)
     {
       geometry_msgs::Point32 point;
-      point.x = hull[i % hull.size()].x;
-      point.y = hull[i % hull.size()].y;
+      point.x = (hull.size()<=0) ? 0 : hull[i % hull.size()].x;
+      // point.x = hull[i % hull.size()].x;
+      point.y = (hull.size()<=0) ? 0 : hull[i % hull.size()].y;
+      // point.y = hull[i % hull.size()].y;
       point.z = max_point_.z;
       polygon_.polygon.points.push_back(point);
     }
@@ -354,4 +358,19 @@ int Cluster::GetId()
 Cluster::~Cluster()
 {
   // TODO Auto-generated destructor stub
+}
+
+float Cluster::GetHeight()
+{
+  return height_;
+}
+
+float Cluster::GetWidth()
+{
+  return width_;
+}
+
+float Cluster::GetLength()
+{
+  return length_;
 }
