@@ -4,6 +4,8 @@
 #include <sstream>
 #include <limits>
 #include <cmath>
+#include <algorithm>
+#include <stdlib.h>
 
 #include <ros/ros.h>
 #include <pcl/common/impl/angles.hpp>
@@ -100,6 +102,7 @@ std_msgs::Header _velodyne_header;
 
 std::string _output_frame;
 
+
 static double _radius_outlier_removal;
 static int _neighbours_outlier_removal;
 static bool _velodyne_transform_available;
@@ -115,6 +118,7 @@ static bool _remove_ground;  // only ground
 static double _min_cluster_height;
 static bool _using_sensor_cloud;
 static bool _use_diffnormals;
+
 
 static double _clip_min_height;
 static double _clip_max_height;
@@ -144,6 +148,48 @@ tf::StampedTransform *_transform;
 tf::StampedTransform *_velodyne_output_transform;
 tf::TransformListener *_transform_listener;
 tf::TransformListener *_vectormap_transform_listener;
+
+//image
+static int birdview_scale = 50;
+const int buffer_size = 1;
+static int frame_count = 0;
+static int birdview_width = 1000;
+static int birdview_height = 1000;
+static cv::Mat birdview_buffer[buffer_size];
+static cv::Mat filtered_mat(birdview_height, birdview_width, CV_8UC1, cv::Scalar(0));
+
+std::string type2str(int type) {
+  std::string r;
+
+  uchar depth = type & CV_MAT_DEPTH_MASK;
+  uchar chans = 1 + (type >> CV_CN_SHIFT);
+
+  switch ( depth ) {
+    case CV_8U:  r = "8U"; break;
+    case CV_8S:  r = "8S"; break;
+    case CV_16U: r = "16U"; break;
+    case CV_16S: r = "16S"; break;
+    case CV_32S: r = "32S"; break;
+    case CV_32F: r = "32F"; break;
+    case CV_64F: r = "64F"; break;
+    default:     r = "User"; break;
+  }
+
+  r += "C";
+  r += (chans+'0');
+
+  return r;
+}
+
+bool less_by_x(const geometry_msgs::Point& lhs, const geometry_msgs::Point& rhs)
+{
+  return lhs.x < rhs.x;
+}
+
+bool less_by_y(const geometry_msgs::Point& lhs, const geometry_msgs::Point& rhs)
+{
+  return lhs.y < rhs.y;
+}
 
 tf::StampedTransform findTransform(const std::string &in_target_frame, const std::string &in_source_frame)
 {
@@ -176,27 +222,88 @@ geometry_msgs::Point transformPoint(const geometry_msgs::Point& point, const tf:
   return ros_point;
 }
 
-// void pickLeitbakes(const autoware_msgs::CloudClusterArray clusters_msg, const pcl::PointCloud<pcl::PointXYZRGB>::Ptr leitbakes_cloud_ptr)
-// {
-//   double height_cluster;
+cv::Mat polyfit(std::vector<geometry_msgs::Point>& in_point, int n)
+{
+  int birdview_width = 1000;
+  int birdview_height = 1000;
+  int birdview_scale = 50;
+	int size = in_point.size();
+	int x_num = n + 1;
+	cv::Mat mat_u(size, x_num, CV_64F);
+	cv::Mat mat_y(size, 1, CV_64F);
+ 
+	for (int i = 0; i < mat_u.rows; ++i)
+		for (int j = 0; j < mat_u.cols; ++j)
+		{
+      double y_transformed = in_point[i].x * birdview_scale + birdview_height;
+			mat_u.at<double>(i, j) = pow(y_transformed, j);
+		}
+ 
+	for (int i = 0; i < mat_y.rows; ++i)
+	{
+    double x_transformed = in_point[i].y * birdview_scale + birdview_width/2;
+		mat_y.at<double>(i, 0) = x_transformed;
+	}
 
-//   for (auto& cluster_msg:clusters_msg.clusters)
-//   {
-//     pcl::PCLPointCloud2 pcl_pc2;
-//     pcl_conversions::toPCL(clusters_msg.clusters.cloud,pcl_pc2);
-//     pcl::PointCloud<pcl::PointXYZ>::Ptr cluster_cloud_ptr(new pcl::PointCloud<pcl::PointXYZ>);
-//     pcl::fromPCLPointCloud2(pcl_pc2,*cluster_cloud_ptr);
-//     ClusterPtr cluster(new Cluster());
+  std::string mat_u_type = type2str(mat_u.type());
+  std::string mat_y_type = type2str(mat_y.type());
+  ROS_INFO("Matrix: %s %dx%d \n", mat_u_type.c_str(), mat_u.cols, mat_u.rows );
+  ROS_INFO("Matrix: %s %dx%d \n", mat_y_type.c_str(), mat_y.cols, mat_y.rows );
+	cv::Mat mat_k(x_num, 1, CV_64F);
+	mat_k = (mat_u.t()*mat_u).inv()*mat_u.t()*mat_y; //in the case of one point input, (mat_u.t()*mat_u) is singular, inv() generates all zero
+	return mat_k;
+}
 
-//     cluster->SetCloud(cluster_cloud_ptr, it->points_in_cluster, _velodyne_header, k, (int) _colors[k].val[0],
-//                       (int) _colors[k].val[1], (int) _colors[k].val[2], "", _pose_estimation);
-//     if (cluster->GetHeight() >= 0.3)
-//     {    
-//       (*leitbakes_cloud_ptr) += (*cluster->GetCloud());
-//       pcl::toROSMsg(*leitbakes_cloud_ptr, cloud_msg);
-//     }
-//   }
-// }
+cv::Mat findLane(int n)
+{
+  // filtered_mat;
+
+  return polyfit(in_centroids.points, n);
+}
+
+void centroidsToMat(autoware_msgs::Centroids &in_centroids)
+{
+  cv::Mat birdview_mat(birdview_width, birdview_height, CV_8UC3, cv::Scalar::all(0));
+	for (auto centroid:in_centroids.points)
+	{
+		cv::Point ipt(int(centroid.y*birdview_scale+birdview_width/2), int(centroid.x*birdview_scale+birdview_height));
+		cv::circle(birdview_mat, ipt, 30, Scalar(0, 0, 255), CV_FILLED, CV_AA);
+	}
+  birdview_buffer[frame_count % buffer_size] = birdview_mat;
+}
+
+void visualizeFitting(autoware_msgs::Centroids &in_centroids, cv::Mat coeffient_mat, int n)
+{
+  int birdview_width = 1000;
+  int birdview_height = 1000;
+  int birdview_scale = 50;
+  int num_y_polyline = 1000;
+  auto minmax_element_x = std::minmax_element(in_centroids.points.begin(), in_centroids.points.end(), less_by_x);
+  auto max_element_y = std::max_element(in_centroids.points.begin(), in_centroids.points.end(), less_by_y);
+  float x_min = (*minmax_element_x.first).x;
+  float x_max = (*minmax_element_x.second).x;
+  float y_max = (*max_element_y).y;
+
+	// cv::Mat visual_mat((abs(int(x_max*birdview_scale))+50)*2, (abs(int(y_max*birdview_scale))+50)*2, CV_8UC3, Scalar::all(0));
+
+  cv::Mat visual_mat = filtered_mat.clone();
+  for (int i = 0; i < num_y_polyline; ++i)
+  { 
+    cv::Point2d ipt;
+    ipt.y = i;
+    float x = 0;
+    for (int j = 0; j < n + 1; ++j)
+    {
+      x += coeffient_mat.at<double>(j, 0)*pow(i,j);
+    }
+    ipt.x = x;
+    circle(visual_mat, ipt, 1, Scalar(255, 255, 255), CV_FILLED, CV_AA);
+    
+  }
+  imshow("visualfit", visual_mat);
+  waitKey(1);
+}
+
 void outlierRemoval(const pcl::PointCloud<pcl::PointXYZ>::Ptr in_cloud_ptr,
                     pcl::PointCloud<pcl::PointXYZ>::Ptr out_cloud_ptr)
 {
@@ -229,6 +336,19 @@ void intensityFilter(const pcl::PointCloud<pcl::PointXYZI>::Ptr in_cloud_ptr,
     }    
 }
 
+void filterNoiseClusters()
+{
+  if (frame_count == 0) //0 1 2 3 4 5 6 7 8 9
+  {
+    cv::cvtColor(birdview_buffer[frame_count % buffer_size], filtered_mat, cv::COLOR_BGR2GRAY);
+  }
+  else
+  { 
+    cv::Mat birdview_gray;
+    cv::cvtColor(birdview_buffer[frame_count % buffer_size], birdview_gray, cv::COLOR_BGR2GRAY);
+    cv::bitwise_or(filtered_mat, birdview_gray, filtered_mat);
+  }
+}
 
 void transformBoundingBox(const jsk_recognition_msgs::BoundingBox &in_boundingbox,
                           jsk_recognition_msgs::BoundingBox &out_boundingbox, const std::string &in_target_frame,
@@ -616,7 +736,6 @@ void segmentByDistance(const pcl::PointCloud<pcl::PointXYZ>::Ptr in_cloud_ptr,
   // 2 => 30-45 d=1.6
   // 3 => 45-60 d=2.1
   // 4 => >60   d=2.6
-  ROS_INFO("segmentByDistance in cloud size = %d",in_cloud_ptr->points.size());
   std::vector<ClusterPtr> all_clusters;
 
   if (!_use_multiple_thres)
@@ -641,7 +760,6 @@ void segmentByDistance(const pcl::PointCloud<pcl::PointXYZ>::Ptr in_cloud_ptr,
 #ifdef GPU_CLUSTERING
     if (_use_gpu)
     {
-      ROS_INFO("-1");
       all_clusters = clusterAndColorGpu(cloud_ptr, out_cloud_ptr, in_out_centroids,
                                         _clustering_distance);
     } else
@@ -921,6 +1039,8 @@ void removePointsUpTo(const pcl::PointCloud<pcl::PointXYZ>::Ptr in_cloud_ptr,
 
 void velodyne_callback(const sensor_msgs::PointCloud2ConstPtr& in_sensor_cloud)
 {
+
+  
   //_start = std::chrono::system_clock::now();
   ROS_INFO("callback of euclidean node");
   if (!_using_sensor_cloud)
@@ -938,7 +1058,7 @@ void velodyne_callback(const sensor_msgs::PointCloud2ConstPtr& in_sensor_cloud)
     pcl::PointCloud<pcl::PointXYZ>::Ptr diffnormals_cloud_ptr(new pcl::PointCloud<pcl::PointXYZ>);
     pcl::PointCloud<pcl::PointXYZ>::Ptr clipped_cloud_ptr(new pcl::PointCloud<pcl::PointXYZ>);
     pcl::PointCloud<pcl::PointXYZRGB>::Ptr colored_clustered_cloud_ptr(new pcl::PointCloud<pcl::PointXYZRGB>);
-    // pcl::PointCloud<pcl::PointXYZRGB>::Ptr leitbake_clusters_ptr(new pcl::PointCloud<pcl::PointXYZRGB>);
+
 
     autoware_msgs::Centroids centroids;
     autoware_msgs::CloudClusterArray cloud_clusters;
@@ -1001,13 +1121,23 @@ void velodyne_callback(const sensor_msgs::PointCloud2ConstPtr& in_sensor_cloud)
     cloud_clusters.header = _velodyne_header;
 
     publishCloudClusters(&_pub_clusters_message, cloud_clusters, _output_frame, _velodyne_header); //autoware_msgs::CloudClusterArray
+    if (frame_count %  == 5) //0 1 2 3 4 5 6 7 8 9
+    {
+      
+    }
+    centroidsToMat(centroids);
+    filterNoiseClusters();
 
-    //pick clusters of leitbakes
-    // pickLeitbakes(cloud_clusters, leitbake_clusters_ptr);
-    //publish cloud of clusters of leitbakes
-    // publishColorCloud(&_pub_leitbakes_cloud, leitbake_clusters_ptr);
+    cv::Mat coeffientMat;
+    coeffientMat = findLane(centroids, 3);
+    visualizeFitting(centroids, coeffientMat, 3);
 
     _using_sensor_cloud = false;
+  }
+  frame_count++;
+  if (frame_count % 10 == 0)
+  {
+    frame_count = 0;
   }
 }
 int main(int argc, char **argv)
@@ -1039,7 +1169,8 @@ int main(int argc, char **argv)
   _pub_points_lanes_cloud = h.advertise<sensor_msgs::PointCloud2>("/points_lanes", 1);
   _pub_clusters_message = h.advertise<autoware_msgs::CloudClusterArray>("/detection/lidar_detector/cloud_clusters", 1);
   _pub_detected_objects = h.advertise<autoware_msgs::DetectedObjectArray>("/detection/lidar_detector/objects", 1);
-
+  std::cout << birdview_buffer << std::endl;
+  std::fill_n(birdview_buffer, buffer_size, Mat(birdview_height, birdview_width, CV_8UC1, cv::Scalar(0)));
   std::string points_topic, gridmap_topic;
 
   _using_sensor_cloud = false;
