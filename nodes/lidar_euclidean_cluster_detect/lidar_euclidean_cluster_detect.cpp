@@ -150,13 +150,16 @@ tf::TransformListener *_transform_listener;
 tf::TransformListener *_vectormap_transform_listener;
 
 //image
-static int birdview_scale = 50;
-const int buffer_size = 1;
-static int frame_count = 0;
-static int birdview_width = 1000;
-static int birdview_height = 1000;
-static cv::Mat birdview_buffer[buffer_size];
-static cv::Mat filtered_mat(birdview_height, birdview_width, CV_8UC1, cv::Scalar(0));
+static int _birdview_scale = 50;
+const int _buffer_size = 1;
+static int _frame_count = 0;
+static int _birdview_width = 1000;
+static int _birdview_height = 1000;
+static cv::Mat _birdview_buffer_8UC3[_buffer_size];
+static cv::Mat _track_mat_8UC1(_birdview_height, _birdview_width, CV_8UC1, cv::Scalar(0));
+static cv::Mat _filtered_mat_8UC1 = Mat::zeros(_track_mat_8UC1.size(), CV_8UC1);
+static cv::Mat _coeffient_linefitting_mat_64F;
+static cv::Mat _visual_linefitting_mat_8UC1 = Mat::zeros(_track_mat_8UC1.size(), CV_8UC1);
 
 std::string type2str(int type) {
   std::string r;
@@ -222,12 +225,27 @@ geometry_msgs::Point transformPoint(const geometry_msgs::Point& point, const tf:
   return ros_point;
 }
 
-cv::Mat polyfit(std::vector<geometry_msgs::Point>& in_point, int n)
+void split_centroids(std::vector<cv::Point>& in_centroids, std::vector<cv::Point>& centroids_left_lane, std::vector<cv::Point>& centroids_right_lane)
 {
-  int birdview_width = 1000;
-  int birdview_height = 1000;
-  int birdview_scale = 50;
-	int size = in_point.size();
+    //remember that in_centroids may be invalid, check the validity
+  static std::vector<cv::Point> centroids_last_frame;
+  if (frame_count == 7)
+  {
+
+  }
+  if (frame_count == 6)
+  {
+    centroids_last_frame.clear();
+    centroids_last_frame.push_back(in_centroids);
+  }
+}
+
+void polyfit(std::vector<cv::Point>& in_points, int n)
+{
+  int _birdview_width = 1000;
+  int _birdview_height = 1000;
+  int _birdview_scale = 50;
+	int size = in_points.size();
 	int x_num = n + 1;
 	cv::Mat mat_u(size, x_num, CV_64F);
 	cv::Mat mat_y(size, 1, CV_64F);
@@ -235,48 +253,65 @@ cv::Mat polyfit(std::vector<geometry_msgs::Point>& in_point, int n)
 	for (int i = 0; i < mat_u.rows; ++i)
 		for (int j = 0; j < mat_u.cols; ++j)
 		{
-      double y_transformed = in_point[i].x * birdview_scale + birdview_height;
-			mat_u.at<double>(i, j) = pow(y_transformed, j);
+      // double y_transformed = in_points[i].x * _birdview_scale + _birdview_height;
+			mat_u.at<double>(i, j) = pow(in_points[i].y, j);
 		}
  
 	for (int i = 0; i < mat_y.rows; ++i)
 	{
-    double x_transformed = in_point[i].y * birdview_scale + birdview_width/2;
-		mat_y.at<double>(i, 0) = x_transformed;
+    // double x_transformed = in_points[i].y * _birdview_scale + _birdview_width/2;
+		mat_y.at<double>(i, 0) = in_points[i].x;
 	}
 
   std::string mat_u_type = type2str(mat_u.type());
   std::string mat_y_type = type2str(mat_y.type());
-  ROS_INFO("Matrix: %s %dx%d \n", mat_u_type.c_str(), mat_u.cols, mat_u.rows );
-  ROS_INFO("Matrix: %s %dx%d \n", mat_y_type.c_str(), mat_y.cols, mat_y.rows );
-	cv::Mat mat_k(x_num, 1, CV_64F);
-	mat_k = (mat_u.t()*mat_u).inv()*mat_u.t()*mat_y; //in the case of one point input, (mat_u.t()*mat_u) is singular, inv() generates all zero
-	return mat_k;
+  // ROS_INFO("Matrix: %s %dx%d \n", mat_u_type.c_str(), mat_u.cols, mat_u.rows );
+  // ROS_INFO("Matrix: %s %dx%d \n", mat_y_type.c_str(), mat_y.cols, mat_y.rows );
+	// _coeffient_linefitting_mat_64F = cv::Mat(x_num, 1, CV_64F);
+	_coeffient_linefitting_mat_64F = (mat_u.t()*mat_u).inv()*mat_u.t()*mat_y; //in the case of one point input, (mat_u.t()*mat_u) is singular, inv() generates all zero
+
 }
 
-cv::Mat findLane(int n)
+void fittingLane(autoware_msgs::Centroids &in_centroids, int n, std::vector<std::vector<cv::Point>>& contours)
 {
-  // filtered_mat;
+  std::vector<cv::Point> centroids_filtered;
+	for (auto centroid:in_centroids.points)
+	{
+		cv::Point ipt(int(centroid.y*_birdview_scale+_birdview_width/2), int(centroid.x*_birdview_scale+_birdview_height));
+    for(int i = 0; i< contours.size(); i++)
+    {
+      cv::drawContours(_birdview_buffer_8UC3[0], contours, i, cv::Scalar(0,0,255), 2, 8);       
 
-  return polyfit(in_centroids.points, n);
+      if (pointPolygonTest(contours[i], ipt, false) == 1) //1 inside, 0 edge, -1 outside, notice that -1 is also true
+      {
+        centroids_filtered.push_back(ipt);
+		    cv::circle(_filtered_mat_8UC1, ipt, 3, Scalar(255), 2, CV_AA);
+      }
+    }
+	}
+  cv::imshow("red", _birdview_buffer_8UC3[0]);
+  if (centroids_filtered.size() >= 3)
+  {
+    polyfit(centroids_filtered, n);
+  }
 }
 
 void centroidsToMat(autoware_msgs::Centroids &in_centroids)
 {
-  cv::Mat birdview_mat(birdview_width, birdview_height, CV_8UC3, cv::Scalar::all(0));
+  cv::Mat birdview_mat_8UC3(_birdview_width, _birdview_height, CV_8UC3, cv::Scalar::all(0));
 	for (auto centroid:in_centroids.points)
 	{
-		cv::Point ipt(int(centroid.y*birdview_scale+birdview_width/2), int(centroid.x*birdview_scale+birdview_height));
-		cv::circle(birdview_mat, ipt, 30, Scalar(0, 0, 255), CV_FILLED, CV_AA);
+		cv::Point ipt(int(centroid.y*_birdview_scale+_birdview_width/2), int(centroid.x*_birdview_scale+_birdview_height));
+		cv::circle(birdview_mat_8UC3, ipt, 30, Scalar(255, 255, 255), CV_FILLED, CV_AA);
 	}
-  birdview_buffer[frame_count % buffer_size] = birdview_mat;
+  _birdview_buffer_8UC3[_frame_count % _buffer_size] = birdview_mat_8UC3;
 }
 
-void visualizeFitting(autoware_msgs::Centroids &in_centroids, cv::Mat coeffient_mat, int n)
+void visualizeFitting(autoware_msgs::Centroids &in_centroids, int n)
 {
-  int birdview_width = 1000;
-  int birdview_height = 1000;
-  int birdview_scale = 50;
+  int _birdview_width = 1000;
+  int _birdview_height = 1000;
+  int _birdview_scale = 50;
   int num_y_polyline = 1000;
   auto minmax_element_x = std::minmax_element(in_centroids.points.begin(), in_centroids.points.end(), less_by_x);
   auto max_element_y = std::max_element(in_centroids.points.begin(), in_centroids.points.end(), less_by_y);
@@ -284,24 +319,31 @@ void visualizeFitting(autoware_msgs::Centroids &in_centroids, cv::Mat coeffient_
   float x_max = (*minmax_element_x.second).x;
   float y_max = (*max_element_y).y;
 
-	// cv::Mat visual_mat((abs(int(x_max*birdview_scale))+50)*2, (abs(int(y_max*birdview_scale))+50)*2, CV_8UC3, Scalar::all(0));
+	// cv::Mat visual_mat((abs(int(x_max*_birdview_scale))+50)*2, (abs(int(y_max*_birdview_scale))+50)*2, CV_8UC3, Scalar::all(0));
 
-  cv::Mat visual_mat = filtered_mat.clone();
-  for (int i = 0; i < num_y_polyline; ++i)
-  { 
-    cv::Point2d ipt;
-    ipt.y = i;
-    float x = 0;
-    for (int j = 0; j < n + 1; ++j)
+  if (_frame_count == 7)
+  {
+    // _visual_linefitting_mat_8UC1 = _filtered_mat_8UC1.clone();
+    if (!_coeffient_linefitting_mat_64F.empty())
     {
-      x += coeffient_mat.at<double>(j, 0)*pow(i,j);
+      _filtered_mat_8UC1.copyTo(_visual_linefitting_mat_8UC1);
+      for (int i = 0; i < num_y_polyline; ++i)
+      { 
+        cv::Point2d ipt;
+        ipt.y = i;
+        float x = 0;
+        for (int j = 0; j < n + 1; ++j)
+        {
+          x += _coeffient_linefitting_mat_64F.at<double>(j, 0)*pow(i,j);
+        }
+        ipt.x = x;
+        circle(_visual_linefitting_mat_8UC1, ipt, 1, Scalar(255), CV_FILLED, CV_AA);
+      }
     }
-    ipt.x = x;
-    circle(visual_mat, ipt, 1, Scalar(255, 255, 255), CV_FILLED, CV_AA);
-    
+
   }
-  imshow("visualfit", visual_mat);
-  waitKey(1);
+
+  cv::imshow("visualfit", _visual_linefitting_mat_8UC1);
 }
 
 void outlierRemoval(const pcl::PointCloud<pcl::PointXYZ>::Ptr in_cloud_ptr,
@@ -336,17 +378,43 @@ void intensityFilter(const pcl::PointCloud<pcl::PointXYZI>::Ptr in_cloud_ptr,
     }    
 }
 
-void filterNoiseClusters()
+void findLane(autoware_msgs::Centroids &in_centroids, int n)
 {
-  if (frame_count == 0) //0 1 2 3 4 5 6 7 8 9
+  if (_frame_count == 0) //0 1 2 3 4 5 6 7
   {
-    cv::cvtColor(birdview_buffer[frame_count % buffer_size], filtered_mat, cv::COLOR_BGR2GRAY);
+    cv::cvtColor(_birdview_buffer_8UC3[_frame_count % _buffer_size], _track_mat_8UC1, cv::COLOR_BGR2GRAY);
+  }
+  else if (_frame_count == 7)
+  {
+    cv::Mat birdview_gray;
+    cv::cvtColor(_birdview_buffer_8UC3[_frame_count % _buffer_size], birdview_gray, cv::COLOR_BGR2GRAY);
+    cv::bitwise_or(_track_mat_8UC1, birdview_gray, _track_mat_8UC1);
+    std::vector<std::vector<cv::Point>> contours;
+    std::vector<std::vector<cv::Point>> contours_filtered;
+	  std::vector<cv::Vec4i> hierarchy; 
+    std::vector<cv::Point> centroids_left_lane; 
+    std::vector<cv::Point> centroids_right_lane; 
+    cv::findContours(_track_mat_8UC1, contours, hierarchy, CV_RETR_TREE, CV_CHAIN_APPROX_SIMPLE, Point(0, 0));
+    _filtered_mat_8UC1 = _filtered_mat_8UC1&(cv::Scalar(0));
+    ROS_INFO("size of contours %d before filteration", contours.size());
+
+    for(int i = 0; i< contours.size(); i++)
+    {
+      if (contourArea(contours[i]) >= 9000.0)
+      { 
+        cv::drawContours(_filtered_mat_8UC1, contours, i, cv::Scalar(255), 2, 8);   
+        contours_filtered.push_back(contours[i]);
+      }
+    }
+    split_centroids(in_centroids, centroids_left_lane, centroids_right_lane);
+    // fittingLane(in_centroids, n, contours_filtered); //fitting right dataflow:parameter to global variable _coeffient_linefitting_mat_64F
+    // fittingLane(in_centroids, n, contours_filtered); //fitting left 
   }
   else
   { 
     cv::Mat birdview_gray;
-    cv::cvtColor(birdview_buffer[frame_count % buffer_size], birdview_gray, cv::COLOR_BGR2GRAY);
-    cv::bitwise_or(filtered_mat, birdview_gray, filtered_mat);
+    cv::cvtColor(_birdview_buffer_8UC3[_frame_count % _buffer_size], birdview_gray, cv::COLOR_BGR2GRAY);
+    cv::bitwise_or(_track_mat_8UC1, birdview_gray, _track_mat_8UC1);
   }
 }
 
@@ -1040,7 +1108,6 @@ void removePointsUpTo(const pcl::PointCloud<pcl::PointXYZ>::Ptr in_cloud_ptr,
 void velodyne_callback(const sensor_msgs::PointCloud2ConstPtr& in_sensor_cloud)
 {
 
-  
   //_start = std::chrono::system_clock::now();
   ROS_INFO("callback of euclidean node");
   if (!_using_sensor_cloud)
@@ -1121,23 +1188,17 @@ void velodyne_callback(const sensor_msgs::PointCloud2ConstPtr& in_sensor_cloud)
     cloud_clusters.header = _velodyne_header;
 
     publishCloudClusters(&_pub_clusters_message, cloud_clusters, _output_frame, _velodyne_header); //autoware_msgs::CloudClusterArray
-    if (frame_count %  == 5) //0 1 2 3 4 5 6 7 8 9
-    {
-      
-    }
+
     centroidsToMat(centroids);
-    filterNoiseClusters();
-
-    cv::Mat coeffientMat;
-    coeffientMat = findLane(centroids, 3);
-    visualizeFitting(centroids, coeffientMat, 3);
-
+    findLane(centroids, 3);
+    visualizeFitting(centroids, 3);
+    cv::waitKey(1);
     _using_sensor_cloud = false;
   }
-  frame_count++;
-  if (frame_count % 10 == 0)
+  _frame_count++;
+  if (_frame_count == 8)
   {
-    frame_count = 0;
+    _frame_count = 0;
   }
 }
 int main(int argc, char **argv)
@@ -1169,8 +1230,8 @@ int main(int argc, char **argv)
   _pub_points_lanes_cloud = h.advertise<sensor_msgs::PointCloud2>("/points_lanes", 1);
   _pub_clusters_message = h.advertise<autoware_msgs::CloudClusterArray>("/detection/lidar_detector/cloud_clusters", 1);
   _pub_detected_objects = h.advertise<autoware_msgs::DetectedObjectArray>("/detection/lidar_detector/objects", 1);
-  std::cout << birdview_buffer << std::endl;
-  std::fill_n(birdview_buffer, buffer_size, Mat(birdview_height, birdview_width, CV_8UC1, cv::Scalar(0)));
+  std::cout << _birdview_buffer_8UC3 << std::endl;
+  std::fill_n(_birdview_buffer_8UC3, _buffer_size, Mat(_birdview_height, _birdview_width, CV_8UC1, cv::Scalar(0)));
   std::string points_topic, gridmap_topic;
 
   _using_sensor_cloud = false;
