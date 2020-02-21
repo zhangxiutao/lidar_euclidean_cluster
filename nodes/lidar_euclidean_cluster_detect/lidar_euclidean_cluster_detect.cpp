@@ -6,6 +6,7 @@
 #include <cmath>
 #include <algorithm>
 #include <stdlib.h>
+#include <numeric>
 
 #include <ros/ros.h>
 #include <pcl/common/impl/angles.hpp>
@@ -63,6 +64,8 @@
 #include <opencv/cv.h>
 #include <opencv/highgui.h>
 #include <opencv2/core/version.hpp>
+#include "munkres/munkres.h"
+#include "munkres/adapters/boostmatrixadapter.h"
 
 #if (CV_MAJOR_VERSION == 3)
 
@@ -184,6 +187,11 @@ std::string type2str(int type) {
   return r;
 }
 
+double euclidean_distance(cv::Point& p1, cv::Point& p2)
+{
+  return sqrt((p1.x - p2.x) * (p1.x - p2.x) + (p1.y - p2.y) * (p1.y - p2.y));
+}
+
 bool less_by_x(const geometry_msgs::Point& lhs, const geometry_msgs::Point& rhs)
 {
   return lhs.x < rhs.x;
@@ -225,21 +233,6 @@ geometry_msgs::Point transformPoint(const geometry_msgs::Point& point, const tf:
   return ros_point;
 }
 
-void split_centroids(std::vector<cv::Point>& in_centroids, std::vector<cv::Point>& centroids_left_lane, std::vector<cv::Point>& centroids_right_lane)
-{
-    //remember that in_centroids may be invalid, check the validity
-  static std::vector<cv::Point> centroids_last_frame;
-  if (frame_count == 7)
-  {
-
-  }
-  if (frame_count == 6)
-  {
-    centroids_last_frame.clear();
-    centroids_last_frame.push_back(in_centroids);
-  }
-}
-
 void polyfit(std::vector<cv::Point>& in_points, int n)
 {
   int _birdview_width = 1000;
@@ -272,9 +265,8 @@ void polyfit(std::vector<cv::Point>& in_points, int n)
 
 }
 
-void fittingLane(autoware_msgs::Centroids &in_centroids, int n, std::vector<std::vector<cv::Point>>& contours)
+void filterCentroids(autoware_msgs::Centroids &in_centroids, std::vector<std::vector<cv::Point>>& contours, std::vector<cv::Point>& centroids_filtered)
 {
-  std::vector<cv::Point> centroids_filtered;
 	for (auto centroid:in_centroids.points)
 	{
 		cv::Point ipt(int(centroid.y*_birdview_scale+_birdview_width/2), int(centroid.x*_birdview_scale+_birdview_height));
@@ -289,11 +281,6 @@ void fittingLane(autoware_msgs::Centroids &in_centroids, int n, std::vector<std:
       }
     }
 	}
-  cv::imshow("red", _birdview_buffer_8UC3[0]);
-  if (centroids_filtered.size() >= 3)
-  {
-    polyfit(centroids_filtered, n);
-  }
 }
 
 void centroidsToMat(autoware_msgs::Centroids &in_centroids)
@@ -323,27 +310,29 @@ void visualizeFitting(autoware_msgs::Centroids &in_centroids, int n)
 
   if (_frame_count == 7)
   {
-    // _visual_linefitting_mat_8UC1 = _filtered_mat_8UC1.clone();
-    if (!_coeffient_linefitting_mat_64F.empty())
-    {
-      _filtered_mat_8UC1.copyTo(_visual_linefitting_mat_8UC1);
-      for (int i = 0; i < num_y_polyline; ++i)
-      { 
-        cv::Point2d ipt;
-        ipt.y = i;
-        float x = 0;
-        for (int j = 0; j < n + 1; ++j)
-        {
-          x += _coeffient_linefitting_mat_64F.at<double>(j, 0)*pow(i,j);
-        }
-        ipt.x = x;
-        circle(_visual_linefitting_mat_8UC1, ipt, 1, Scalar(255), CV_FILLED, CV_AA);
-      }
-    }
+    cv::bitwise_or(_visual_linefitting_mat_8UC1, _filtered_mat_8UC1, _visual_linefitting_mat_8UC1);
+    // if (!_coeffient_linefitting_mat_64F.empty())
+    // {
+    //   _filtered_mat_8UC1.copyTo(_visual_linefitting_mat_8UC1);
+    //   for (int i = 0; i < num_y_polyline; ++i)
+    //   { 
+    //     cv::Point2d ipt;
+    //     ipt.y = i;
+    //     float x = 0;
+    //     for (int j = 0; j < n + 1; ++j)
+    //     {
+    //       x += _coeffient_linefitting_mat_64F.at<double>(j, 0)*pow(i,j);
+    //     }
+    //     ipt.x = x;
+    //     circle(_visual_linefitting_mat_8UC1, ipt, 1, Scalar(255), CV_FILLED, CV_AA);
+    //   }
+    // }
 
   }
-
-  cv::imshow("visualfit", _visual_linefitting_mat_8UC1);
+  cv::Mat resized_mat; 
+  cv::resize(_visual_linefitting_mat_8UC1, resized_mat, cv::Size(_visual_linefitting_mat_8UC1.cols * 0.5,_visual_linefitting_mat_8UC1.rows * 0.5));
+  cv::imshow("visualfit", resized_mat);
+  cv::imshow("_filtered_mat_8UC1", _filtered_mat_8UC1);
 }
 
 void outlierRemoval(const pcl::PointCloud<pcl::PointXYZ>::Ptr in_cloud_ptr,
@@ -378,22 +367,18 @@ void intensityFilter(const pcl::PointCloud<pcl::PointXYZI>::Ptr in_cloud_ptr,
     }    
 }
 
-void findLane(autoware_msgs::Centroids &in_centroids, int n)
+void filterContours(std::vector<std::vector<cv::Point>>& contours_filtered)
 {
-  if (_frame_count == 0) //0 1 2 3 4 5 6 7
-  {
-    cv::cvtColor(_birdview_buffer_8UC3[_frame_count % _buffer_size], _track_mat_8UC1, cv::COLOR_BGR2GRAY);
-  }
-  else if (_frame_count == 7)
-  {
     cv::Mat birdview_gray;
     cv::cvtColor(_birdview_buffer_8UC3[_frame_count % _buffer_size], birdview_gray, cv::COLOR_BGR2GRAY);
     cv::bitwise_or(_track_mat_8UC1, birdview_gray, _track_mat_8UC1);
     std::vector<std::vector<cv::Point>> contours;
-    std::vector<std::vector<cv::Point>> contours_filtered;
+    std::vector<std::vector<cv::Point>> centroids_filtered_second;
 	  std::vector<cv::Vec4i> hierarchy; 
+    std::vector<cv::Point> centroids_filtered;
     std::vector<cv::Point> centroids_left_lane; 
     std::vector<cv::Point> centroids_right_lane; 
+
     cv::findContours(_track_mat_8UC1, contours, hierarchy, CV_RETR_TREE, CV_CHAIN_APPROX_SIMPLE, Point(0, 0));
     _filtered_mat_8UC1 = _filtered_mat_8UC1&(cv::Scalar(0));
     ROS_INFO("size of contours %d before filteration", contours.size());
@@ -406,9 +391,126 @@ void findLane(autoware_msgs::Centroids &in_centroids, int n)
         contours_filtered.push_back(contours[i]);
       }
     }
-    split_centroids(in_centroids, centroids_left_lane, centroids_right_lane);
-    // fittingLane(in_centroids, n, contours_filtered); //fitting right dataflow:parameter to global variable _coeffient_linefitting_mat_64F
-    // fittingLane(in_centroids, n, contours_filtered); //fitting left 
+}
+
+Matrix<double> dataAssociation(int num_centroids_last_frame, int num_centroids_this_frame, 
+std::vector<cv::Point>& centroids_last_frame, std::vector<cv::Point>& centroids_this_frame)
+{
+  Matrix<double> dist_Mat(num_centroids_last_frame, num_centroids_this_frame);
+  for (int row = 0 ; row < num_centroids_last_frame ; row++)
+    for (int col = 0 ; col < num_centroids_this_frame ; col++) 
+    {
+      dist_Mat(row, col) = euclidean_distance(centroids_last_frame[row], centroids_this_frame[col]);
+    }
+  Munkres<double> matcher;
+  matcher.solve(dist_Mat);
+  for (int row = 0 ; row < num_centroids_last_frame ; row++)
+  {
+    for (int col = 0 ; col < num_centroids_this_frame ; col++) 
+    {
+      std::cout.width(2);
+      std::cout << dist_Mat(row, col) << ",";
+    }
+    std::cout << std::endl;
+  }
+  return dist_Mat;
+}
+
+cv::Point getDisplacementVector(cv::Point& p1,cv::Point& p2)
+{
+  cv::Point vec_displacement;
+  vec_displacement.x = p2.x - p1.x;
+  vec_displacement.y = p2.y - p1.y;
+  return vec_displacement;
+}
+
+cv::Point calculateAveragePoint(std::vector<cv::Point>& in_points)
+{
+  float sum_x = 0;
+  float sum_y = 0;
+  int in_points_size = in_points.size();
+  cv::Point average_point;
+
+  for (auto point:in_points)
+  {
+    sum_x += point.x;
+    sum_y += point.y;
+  }
+
+  average_point.x = sum_x / in_points_size;
+  average_point.y = sum_y / in_points_size;
+
+  return average_point;
+}
+
+void getSensorOrientation(int num_centroids_last_frame, int num_centroids_this_frame, 
+std::vector<cv::Point>& centroids_filtered_last_frame, std::vector<cv::Point>& centroids_filtered_this_frame, 
+Matrix<double>& association_Mat)
+{
+  _visual_linefitting_mat_8UC1 = _visual_linefitting_mat_8UC1&(cv::Scalar(0));
+  std::vector<cv::Point> vecs_displacement;
+  cv::Point vec_average;
+  cv::Point vec_sensor_orientation;
+  cv::Point point_sensor_position(int(_birdview_width / 2), int(_birdview_height));
+  for (int row = 0 ; row < num_centroids_last_frame ; row++)
+  {
+    for (int col = 0 ; col < num_centroids_this_frame ; col++) 
+    {
+      if (association_Mat(row, col) == 0)
+      {
+        cv::line(_visual_linefitting_mat_8UC1, centroids_filtered_last_frame[row], centroids_filtered_this_frame[col], cv::Scalar(255));
+        vecs_displacement.push_back(getDisplacementVector(centroids_filtered_this_frame[col], centroids_filtered_last_frame[row]));
+      }
+    }
+    if (!vecs_displacement.empty())
+    {
+      vec_average = calculateAveragePoint(vecs_displacement); //sometimes vecs_displacement is empty(no matching)
+      ROS_INFO("vec_average is (%d,%d)", vec_average.x, vec_average.y);
+      if (vec_average.x < -100 || vec_average.y < -100)
+      {
+        ROS_INFO("???????????");
+      }
+      vec_sensor_orientation.x = vec_average.x + point_sensor_position.x;
+      vec_sensor_orientation.y = vec_average.y + point_sensor_position.y;
+      cv::line(_visual_linefitting_mat_8UC1, point_sensor_position, vec_sensor_orientation, cv::Scalar(255));
+    }
+  }
+}
+
+void findLane(autoware_msgs::Centroids &in_centroids, int n)
+{
+  //remember that in_centroids may be invalid, check the validity
+  static std::vector<cv::Point> centroids_filtered_last_frame;
+  static int num_centroids_filtered_last_frame;
+  Matrix<double> association_Mat;
+  if (_frame_count == 0) //0 1 2 3 4 5 6 7
+  {
+    cv::cvtColor(_birdview_buffer_8UC3[_frame_count % _buffer_size], _track_mat_8UC1, cv::COLOR_BGR2GRAY);
+  }
+  else if (_frame_count == 6)
+  {
+    std::vector<std::vector<cv::Point>> contours_filtered_last_frame;
+    filterContours(contours_filtered_last_frame);
+    centroids_filtered_last_frame.clear();
+    filterCentroids(in_centroids, contours_filtered_last_frame, centroids_filtered_last_frame);
+    num_centroids_filtered_last_frame = centroids_filtered_last_frame.size();    
+  }
+  else if (_frame_count == 7)
+  {
+    std::vector<std::vector<cv::Point>> contours_filtered_this_frame;
+    static std::vector<cv::Point> centroids_filtered_this_frame;
+    int num_centroids_filtered_this_frame;
+    filterContours(contours_filtered_this_frame);
+    centroids_filtered_this_frame.clear();
+    filterCentroids(in_centroids, contours_filtered_this_frame, centroids_filtered_this_frame);
+    num_centroids_filtered_this_frame = centroids_filtered_this_frame.size();
+    if (num_centroids_filtered_this_frame > 0 && num_centroids_filtered_last_frame > 0)
+    {
+      association_Mat = dataAssociation(num_centroids_filtered_last_frame, num_centroids_filtered_this_frame,
+       centroids_filtered_last_frame, centroids_filtered_this_frame);
+      getSensorOrientation(num_centroids_filtered_last_frame, num_centroids_filtered_this_frame, 
+      centroids_filtered_last_frame, centroids_filtered_this_frame, association_Mat);
+    }
   }
   else
   { 
