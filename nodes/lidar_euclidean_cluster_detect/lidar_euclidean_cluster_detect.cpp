@@ -101,7 +101,7 @@ ros::Publisher _pub_points_lanes_cloud;
 
 ros::Publisher _pub_detected_objects;
 
-std_msgs::Header _velodyne_header;
+std_msgs::Header _pcl_header;
 
 std::string _output_frame;
 
@@ -153,6 +153,7 @@ tf::TransformListener *_transform_listener;
 tf::TransformListener *_vectormap_transform_listener;
 
 //image
+static int _visual_clear_flag = false;
 static int _birdview_scale = 50;
 const int _buffer_size = 1;
 static int _frame_count = 0;
@@ -162,7 +163,7 @@ static cv::Mat _birdview_buffer_8UC3[_buffer_size];
 static cv::Mat _track_mat_8UC1(_birdview_height, _birdview_width, CV_8UC1, cv::Scalar(0));
 static cv::Mat _filtered_mat_8UC1 = Mat::zeros(_track_mat_8UC1.size(), CV_8UC1);
 static cv::Mat _coeffient_linefitting_mat_64F;
-static cv::Mat _visual_linefitting_mat_8UC1 = Mat::zeros(_track_mat_8UC1.size(), CV_8UC1);
+static cv::Mat _visual_linefitting_mat_8UC3 = Mat::zeros(_track_mat_8UC1.size(), CV_8UC3);
 
 std::string type2str(int type) {
   std::string r;
@@ -233,6 +234,19 @@ geometry_msgs::Point transformPoint(const geometry_msgs::Point& point, const tf:
   return ros_point;
 }
 
+template <class T>
+cv::Point coodinateTransformationFromPclToMat(T in_point)
+{
+  if (_pcl_header.frame_id == "os1_lidar")
+  { 
+    return cv::Point(int(in_point.y*_birdview_scale+_birdview_width/2), int(in_point.x*_birdview_scale+_birdview_height));
+  }
+  else if (_pcl_header.frame_id == "velodyne")
+  {
+    return cv::Point(int(in_point.y*_birdview_scale+_birdview_width/2), int(-in_point.x*_birdview_scale+_birdview_height));
+  }
+}
+
 void polyfit(std::vector<cv::Point>& in_points, int n)
 {
   int _birdview_width = 1000;
@@ -269,7 +283,7 @@ void filterCentroids(autoware_msgs::Centroids &in_centroids, std::vector<std::ve
 {
 	for (auto centroid:in_centroids.points)
 	{
-		cv::Point ipt(int(centroid.y*_birdview_scale+_birdview_width/2), int(centroid.x*_birdview_scale+_birdview_height));
+		cv::Point ipt(coodinateTransformationFromPclToMat<geometry_msgs::Point>(centroid));
     for(int i = 0; i< contours.size(); i++)
     {
       cv::drawContours(_birdview_buffer_8UC3[0], contours, i, cv::Scalar(0,0,255), 2, 8);       
@@ -288,7 +302,7 @@ void centroidsToMat(autoware_msgs::Centroids &in_centroids)
   cv::Mat birdview_mat_8UC3(_birdview_width, _birdview_height, CV_8UC3, cv::Scalar::all(0));
 	for (auto centroid:in_centroids.points)
 	{
-		cv::Point ipt(int(centroid.y*_birdview_scale+_birdview_width/2), int(centroid.x*_birdview_scale+_birdview_height));
+		cv::Point ipt(coodinateTransformationFromPclToMat<geometry_msgs::Point>(centroid));
 		cv::circle(birdview_mat_8UC3, ipt, 30, Scalar(255, 255, 255), CV_FILLED, CV_AA);
 	}
   _birdview_buffer_8UC3[_frame_count % _buffer_size] = birdview_mat_8UC3;
@@ -305,15 +319,22 @@ void visualizeFitting(autoware_msgs::Centroids &in_centroids, int n)
   float x_min = (*minmax_element_x.first).x;
   float x_max = (*minmax_element_x.second).x;
   float y_max = (*max_element_y).y;
+  // if (!_visual_clear_flag)
+  // {
+  //   _visual_linefitting_mat_8UC3 = _visual_linefitting_mat_8UC3&(cv::Scalar(0,0,0));
+  // }
 
-	// cv::Mat visual_mat((abs(int(x_max*_birdview_scale))+50)*2, (abs(int(y_max*_birdview_scale))+50)*2, CV_8UC3, Scalar::all(0));
-
+  // cv::Mat temp_mat;
+  // cv::cvtColor(_filtered_mat_8UC1, temp_mat, COLOR_GRAY2BGR);
+  // cv::bitwise_or(_visual_linefitting_mat_8UC3, temp_mat, _visual_linefitting_mat_8UC3);
   if (_frame_count == 7)
   {
-    cv::bitwise_or(_visual_linefitting_mat_8UC1, _filtered_mat_8UC1, _visual_linefitting_mat_8UC1);
+    // cv::Mat temp_mat;
+    // cv::cvtColor(_filtered_mat_8UC1, temp_mat, COLOR_GRAY2BGR);
+    // cv::bitwise_or(_visual_linefitting_mat_8UC3, temp_mat, _visual_linefitting_mat_8UC3);
     // if (!_coeffient_linefitting_mat_64F.empty())
     // {
-    //   _filtered_mat_8UC1.copyTo(_visual_linefitting_mat_8UC1);
+    //   _filtered_mat_8UC1.copyTo(_visual_linefitting_mat_8UC3);
     //   for (int i = 0; i < num_y_polyline; ++i)
     //   { 
     //     cv::Point2d ipt;
@@ -324,15 +345,16 @@ void visualizeFitting(autoware_msgs::Centroids &in_centroids, int n)
     //       x += _coeffient_linefitting_mat_64F.at<double>(j, 0)*pow(i,j);
     //     }
     //     ipt.x = x;
-    //     circle(_visual_linefitting_mat_8UC1, ipt, 1, Scalar(255), CV_FILLED, CV_AA);
+    //     circle(_visual_linefitting_mat_8UC3, ipt, 1, Scalar(255), CV_FILLED, CV_AA);
     //   }
     // }
 
   }
   cv::Mat resized_mat; 
-  cv::resize(_visual_linefitting_mat_8UC1, resized_mat, cv::Size(_visual_linefitting_mat_8UC1.cols * 0.5,_visual_linefitting_mat_8UC1.rows * 0.5));
-  cv::imshow("visualfit", resized_mat);
+  cv::resize(_visual_linefitting_mat_8UC3, resized_mat, cv::Size(_visual_linefitting_mat_8UC3.cols * 0.5,_visual_linefitting_mat_8UC3.rows * 0.5));
+  cv::imshow("origin", _birdview_buffer_8UC3[_frame_count % _buffer_size]);
   cv::imshow("_filtered_mat_8UC1", _filtered_mat_8UC1);
+  cv::imshow("_visual_linefitting_mat_8UC3", resized_mat);
 }
 
 void outlierRemoval(const pcl::PointCloud<pcl::PointXYZ>::Ptr in_cloud_ptr,
@@ -354,17 +376,18 @@ void outlierRemoval(const pcl::PointCloud<pcl::PointXYZ>::Ptr in_cloud_ptr,
 void intensityFilter(const pcl::PointCloud<pcl::PointXYZI>::Ptr in_cloud_ptr,
                     pcl::PointCloud<pcl::PointXYZ>::Ptr out_cloud_ptr)
 {
-    for (unsigned int i = 0; i < in_cloud_ptr->points.size(); i++)
-    {
-        if (in_cloud_ptr->points[i].intensity > 300)
-        {
-            pcl::PointXYZ current_point;
-            current_point.x = in_cloud_ptr->points[i].x;
-            current_point.y = in_cloud_ptr->points[i].y;
-            current_point.z = in_cloud_ptr->points[i].z;
-            out_cloud_ptr->points.push_back(current_point);
-        }
-    }    
+  int intensity_threshold = (_pcl_header.frame_id == "velodyne") ? 50 : 300;
+  for (unsigned int i = 0; i < in_cloud_ptr->points.size(); i++)
+  {
+      if (in_cloud_ptr->points[i].intensity > intensity_threshold)
+      {   
+          pcl::PointXYZ current_point;
+          current_point.x = in_cloud_ptr->points[i].x;
+          current_point.y = in_cloud_ptr->points[i].y;
+          current_point.z = in_cloud_ptr->points[i].z;
+          out_cloud_ptr->points.push_back(current_point);
+      }
+  }    
 }
 
 void filterContours(std::vector<std::vector<cv::Point>>& contours_filtered)
@@ -381,7 +404,6 @@ void filterContours(std::vector<std::vector<cv::Point>>& contours_filtered)
 
     cv::findContours(_track_mat_8UC1, contours, hierarchy, CV_RETR_TREE, CV_CHAIN_APPROX_SIMPLE, Point(0, 0));
     _filtered_mat_8UC1 = _filtered_mat_8UC1&(cv::Scalar(0));
-    ROS_INFO("size of contours %d before filteration", contours.size());
 
     for(int i = 0; i< contours.size(); i++)
     {
@@ -404,15 +426,15 @@ std::vector<cv::Point>& centroids_last_frame, std::vector<cv::Point>& centroids_
     }
   Munkres<double> matcher;
   matcher.solve(dist_Mat);
-  for (int row = 0 ; row < num_centroids_last_frame ; row++)
-  {
-    for (int col = 0 ; col < num_centroids_this_frame ; col++) 
-    {
-      std::cout.width(2);
-      std::cout << dist_Mat(row, col) << ",";
-    }
-    std::cout << std::endl;
-  }
+  // for (int row = 0 ; row < num_centroids_last_frame ; row++)
+  // {
+  //   for (int col = 0 ; col < num_centroids_this_frame ; col++) 
+  //   {
+  //     std::cout.width(2);
+  //     std::cout << dist_Mat(row, col) << ",";
+  //   }
+  //   std::cout << std::endl;
+  // }
   return dist_Mat;
 }
 
@@ -447,8 +469,10 @@ void getSensorOrientation(int num_centroids_last_frame, int num_centroids_this_f
 std::vector<cv::Point>& centroids_filtered_last_frame, std::vector<cv::Point>& centroids_filtered_this_frame, 
 Matrix<double>& association_Mat)
 {
-  _visual_linefitting_mat_8UC1 = _visual_linefitting_mat_8UC1&(cv::Scalar(0));
+  _visual_linefitting_mat_8UC3 = _visual_linefitting_mat_8UC3&(cv::Scalar(0));
   std::vector<cv::Point> vecs_displacement;
+  std::vector<cv::Point> points_left;
+  std::vector<cv::Point> points_right;
   cv::Point vec_average;
   cv::Point vec_sensor_orientation;
   cv::Point point_sensor_position(int(_birdview_width / 2), int(_birdview_height));
@@ -458,21 +482,34 @@ Matrix<double>& association_Mat)
     {
       if (association_Mat(row, col) == 0)
       {
-        cv::line(_visual_linefitting_mat_8UC1, centroids_filtered_last_frame[row], centroids_filtered_this_frame[col], cv::Scalar(255));
+        cv::line(_visual_linefitting_mat_8UC3, centroids_filtered_last_frame[row], centroids_filtered_this_frame[col], cv::Scalar(0, 0, 255));
         vecs_displacement.push_back(getDisplacementVector(centroids_filtered_this_frame[col], centroids_filtered_last_frame[row]));
       }
     }
     if (!vecs_displacement.empty())
     {
       vec_average = calculateAveragePoint(vecs_displacement); //sometimes vecs_displacement is empty(no matching)
-      ROS_INFO("vec_average is (%d,%d)", vec_average.x, vec_average.y);
-      if (vec_average.x < -100 || vec_average.y < -100)
-      {
-        ROS_INFO("???????????");
-      }
+      // ROS_INFO("vec_average is (%d,%d)", vec_average.x, vec_average.y);
+      // if (vec_average.x < -100 || vec_average.y < -100)
+      // {
+      //   ROS_INFO("???????????");
+      // }
       vec_sensor_orientation.x = vec_average.x + point_sensor_position.x;
       vec_sensor_orientation.y = vec_average.y + point_sensor_position.y;
-      cv::line(_visual_linefitting_mat_8UC1, point_sensor_position, vec_sensor_orientation, cv::Scalar(255));
+      for (auto centroid:centroids_filtered_this_frame)
+      {
+        if ((centroid.x * vec_average.y - vec_average.x * centroid.y + vec_average.x * point_sensor_position.y - point_sensor_position.x * vec_average.y) > 0)
+        {
+          points_left.push_back(centroid);
+		      cv::circle(_visual_linefitting_mat_8UC3, centroid, 15, Scalar(0, 255, 0), CV_FILLED, CV_AA);
+        }
+        else
+        {
+          points_right.push_back(centroid);
+		      cv::circle(_visual_linefitting_mat_8UC3, centroid, 15, Scalar(255, 0, 0), CV_FILLED, CV_AA);
+        }
+      }
+      cv::line(_visual_linefitting_mat_8UC3, point_sensor_position, vec_sensor_orientation, cv::Scalar(255, 255, 255));
     }
   }
 }
@@ -480,6 +517,9 @@ Matrix<double>& association_Mat)
 void findLane(autoware_msgs::Centroids &in_centroids, int n)
 {
   //remember that in_centroids may be invalid, check the validity
+  static unsigned int state;
+  static bool _construction_site_flag = false;
+  static bool _construction_site_flag_last = false;
   static std::vector<cv::Point> centroids_filtered_last_frame;
   static int num_centroids_filtered_last_frame;
   Matrix<double> association_Mat;
@@ -504,13 +544,52 @@ void findLane(autoware_msgs::Centroids &in_centroids, int n)
     centroids_filtered_this_frame.clear();
     filterCentroids(in_centroids, contours_filtered_this_frame, centroids_filtered_this_frame);
     num_centroids_filtered_this_frame = centroids_filtered_this_frame.size();
-    if (num_centroids_filtered_this_frame > 0 && num_centroids_filtered_last_frame > 0)
+    _visual_clear_flag = false;
+    if (state == 0)
     {
-      association_Mat = dataAssociation(num_centroids_filtered_last_frame, num_centroids_filtered_this_frame,
-       centroids_filtered_last_frame, centroids_filtered_this_frame);
-      getSensorOrientation(num_centroids_filtered_last_frame, num_centroids_filtered_this_frame, 
-      centroids_filtered_last_frame, centroids_filtered_this_frame, association_Mat);
+      if (num_centroids_filtered_this_frame > 1 && num_centroids_filtered_last_frame > 1)      
+      {
+        state++;
+      }
     }
+    else if (state == 1)
+    {
+      if (num_centroids_filtered_this_frame == 0 || num_centroids_filtered_last_frame == 0)
+      {
+        state--;
+      }
+      else if (num_centroids_filtered_this_frame > 0 && num_centroids_filtered_last_frame > 0)      
+      {
+        state++;
+      }      
+    }
+    else if (state == 2)
+    {
+      if (num_centroids_filtered_this_frame > 1 && num_centroids_filtered_last_frame > 1)
+      {
+        ROS_INFO("yes");
+        association_Mat = dataAssociation(num_centroids_filtered_last_frame, num_centroids_filtered_this_frame,
+        centroids_filtered_last_frame, centroids_filtered_this_frame);
+        getSensorOrientation(num_centroids_filtered_last_frame, num_centroids_filtered_this_frame, 
+        centroids_filtered_last_frame, centroids_filtered_this_frame, association_Mat);
+      }   
+      else if (num_centroids_filtered_this_frame == 0 || num_centroids_filtered_last_frame == 0)   
+      {
+        state++;
+      }
+    }
+    else if (state == 3)
+    {
+      if (num_centroids_filtered_this_frame > 0 && num_centroids_filtered_last_frame > 0)
+      {
+        state--;
+      }
+      else if (num_centroids_filtered_this_frame == 0 || num_centroids_filtered_last_frame == 0)   
+      {
+        state = 0;
+      }     
+    }
+    ROS_INFO("%d", state);
   }
   else
   { 
@@ -580,7 +659,7 @@ void publishCloudClusters(const ros::Publisher *in_publisher, const autoware_msg
       cluster_transformed.header = in_header;
       try
       {
-        _transform_listener->lookupTransform(in_target_frame, _velodyne_header.frame_id, ros::Time(),
+        _transform_listener->lookupTransform(in_target_frame, _pcl_header.frame_id, ros::Time(),
                                              *_transform);
         pcl_ros::transformPointCloud(in_target_frame, *_transform, i->cloud, cluster_transformed.cloud);
         _transform_listener->transformPoint(in_target_frame, ros::Time(), i->min_point, in_header.frame_id,
@@ -659,7 +738,7 @@ void publishCloud(const ros::Publisher *in_publisher, const pcl::PointCloud<pcl:
 {
   sensor_msgs::PointCloud2 cloud_msg;
   pcl::toROSMsg(*in_cloud_to_publish_ptr, cloud_msg);
-  cloud_msg.header = _velodyne_header;
+  cloud_msg.header = _pcl_header;
   in_publisher->publish(cloud_msg);
 }
 
@@ -668,7 +747,7 @@ void publishColorCloud(const ros::Publisher *in_publisher,
 {
   sensor_msgs::PointCloud2 cloud_msg;
   pcl::toROSMsg(*in_cloud_to_publish_ptr, cloud_msg);
-  cloud_msg.header = _velodyne_header;
+  cloud_msg.header = _pcl_header;
   in_publisher->publish(cloud_msg);
 }
 
@@ -739,7 +818,7 @@ std::vector<ClusterPtr> clusterAndColorGpu(const pcl::PointCloud<pcl::PointXYZ>:
   for (auto it = cluster_indices.begin(); it != cluster_indices.end(); it++)
   {
     ClusterPtr cluster(new Cluster());
-    cluster->SetCloud(in_cloud_ptr, it->points_in_cluster, _velodyne_header, k, (int) _colors[k].val[0],
+    cluster->SetCloud(in_cloud_ptr, it->points_in_cluster, _pcl_header, k, (int) _colors[k].val[0],
                       (int) _colors[k].val[1], (int) _colors[k].val[2], "", _pose_estimation);
     ros::param::get("/lidar_euclidean_cluster_detect/min_cluster_height",_min_cluster_height);
     if (cluster->GetHeight() >= _min_cluster_height && cluster->GetWidth() <= 1 && cluster->GetLength() <= 0.8)
@@ -801,7 +880,7 @@ std::vector<ClusterPtr> clusterAndColor(const pcl::PointCloud<pcl::PointXYZ>::Pt
   for (auto it = cluster_indices.begin(); it != cluster_indices.end(); ++it)
   {
     ClusterPtr cluster(new Cluster());
-    cluster->SetCloud(in_cloud_ptr, it->indices, _velodyne_header, k, (int) _colors[k].val[0],
+    cluster->SetCloud(in_cloud_ptr, it->indices, _pcl_header, k, (int) _colors[k].val[0],
                       (int) _colors[k].val[1],
                       (int) _colors[k].val[2], "", _pose_estimation);
     clusters.push_back(cluster);
@@ -857,7 +936,7 @@ void mergeClusters(const std::vector<ClusterPtr> &in_clusters, std::vector<Clust
   if (sum_cloud.points.size() > 0)
   {
     pcl::copyPointCloud(sum_cloud, mono_cloud);
-    merged_cluster->SetCloud(mono_cloud.makeShared(), indices, _velodyne_header, current_index,
+    merged_cluster->SetCloud(mono_cloud.makeShared(), indices, _pcl_header, current_index,
                              (int) _colors[current_index].val[0], (int) _colors[current_index].val[1],
                              (int) _colors[current_index].val[2], "", _pose_estimation);
     out_clusters.push_back(merged_cluster);
@@ -1027,7 +1106,7 @@ void segmentByDistance(const pcl::PointCloud<pcl::PointXYZ>::Ptr in_cloud_ptr,
       jsk_recognition_msgs::BoundingBox bounding_box = final_clusters[i]->GetBoundingBox();
       geometry_msgs::PolygonStamped polygon = final_clusters[i]->GetPolygon();
       jsk_rviz_plugins::Pictogram pictogram_cluster;
-      pictogram_cluster.header = _velodyne_header;
+      pictogram_cluster.header = _pcl_header;
 
       // PICTO
       pictogram_cluster.mode = pictogram_cluster.STRING_MODE;
@@ -1053,8 +1132,8 @@ void segmentByDistance(const pcl::PointCloud<pcl::PointXYZ>::Ptr in_cloud_ptr,
       centroid.x = center_point.x;
       centroid.y = center_point.y;
       centroid.z = center_point.z;
-      bounding_box.header = _velodyne_header;
-      polygon.header = _velodyne_header;
+      bounding_box.header = _pcl_header;
+      polygon.header = _pcl_header;
 
       if (final_clusters[i]->IsValid())
       {
@@ -1062,7 +1141,7 @@ void segmentByDistance(const pcl::PointCloud<pcl::PointXYZ>::Ptr in_cloud_ptr,
         in_out_centroids.points.push_back(centroid);
 
         autoware_msgs::CloudCluster cloud_cluster;
-        final_clusters[i]->ToROSMessage(_velodyne_header, cloud_cluster);
+        final_clusters[i]->ToROSMessage(_pcl_header, cloud_cluster);
         in_out_clusters.clusters.push_back(cloud_cluster);
       }
     }
@@ -1073,7 +1152,6 @@ void removeFloor(const pcl::PointCloud<pcl::PointXYZ>::Ptr in_cloud_ptr,
                  pcl::PointCloud<pcl::PointXYZ>::Ptr out_onlyfloor_cloud_ptr, float in_max_height = 2,
                  float in_floor_max_angle = 20)
 {
-  ROS_INFO("remove floor size=%d",in_cloud_ptr->points.size());
   pcl::SACSegmentation<pcl::PointXYZ> seg;
   pcl::PointIndices::Ptr inliers(new pcl::PointIndices);
   pcl::ModelCoefficients::Ptr coefficients(new pcl::ModelCoefficients);
@@ -1100,7 +1178,6 @@ void removeFloor(const pcl::PointCloud<pcl::PointXYZ>::Ptr in_cloud_ptr,
   extract.setIndices(inliers);
   extract.setNegative(true);  // true removes the indices, false leaves only the indices
   extract.filter(*out_nofloor_cloud_ptr);
-  ROS_INFO("out_nofloor_cloud_ptr->points.size()=%d",out_nofloor_cloud_ptr->points.size());
   // EXTRACT THE FLOOR FROM THE CLOUD
   extract.setNegative(false);  // true removes the indices, false leaves only the indices
   extract.filter(*out_onlyfloor_cloud_ptr);
@@ -1211,7 +1288,6 @@ void velodyne_callback(const sensor_msgs::PointCloud2ConstPtr& in_sensor_cloud)
 {
 
   //_start = std::chrono::system_clock::now();
-  ROS_INFO("callback of euclidean node");
   if (!_using_sensor_cloud)
   {
     _using_sensor_cloud = true;
@@ -1234,7 +1310,9 @@ void velodyne_callback(const sensor_msgs::PointCloud2ConstPtr& in_sensor_cloud)
 
     pcl::fromROSMsg(*in_sensor_cloud, *current_sensor_cloud_ptr);
     
-    _velodyne_header = in_sensor_cloud->header;
+    _pcl_header = in_sensor_cloud->header;
+    _output_frame = _pcl_header.frame_id;
+
     intensityFilter(current_sensor_cloud_ptr, intensity_filtered_cloud_ptr);
     
     if (_remove_points_upto > 0.0)
@@ -1283,13 +1361,13 @@ void velodyne_callback(const sensor_msgs::PointCloud2ConstPtr& in_sensor_cloud)
                       cloud_clusters);
     publishColorCloud(&_pub_cluster_cloud, colored_clustered_cloud_ptr); //colored_clustered_cloud_ptr and cloud_clusters difference?
 
-    centroids.header = _velodyne_header;
+    centroids.header = _pcl_header;
 
-    publishCentroids(&_centroid_pub, centroids, _output_frame, _velodyne_header);
+    publishCentroids(&_centroid_pub, centroids, _output_frame, _pcl_header);
 
-    cloud_clusters.header = _velodyne_header;
+    cloud_clusters.header = _pcl_header;
 
-    publishCloudClusters(&_pub_clusters_message, cloud_clusters, _output_frame, _velodyne_header); //autoware_msgs::CloudClusterArray
+    publishCloudClusters(&_pub_clusters_message, cloud_clusters, _output_frame, _pcl_header); //autoware_msgs::CloudClusterArray
 
     centroidsToMat(centroids);
     findLane(centroids, 3);
@@ -1359,7 +1437,7 @@ int main(int argc, char **argv)
   }
 
  /* Initialize tuning parameter */
-  private_nh.param("min_cluster_height", _min_cluster_height, 0.1);
+  private_nh.param("min_cluster_height", _min_cluster_height, 0.5);
   ROS_INFO("[%s] min_cluster_height: %f", __APP_NAME__, _min_cluster_height);
   private_nh.param("ransac_height", _ransac_height, 1.0);
   ROS_INFO("[%s] ransac_height: %f", __APP_NAME__, _ransac_height);

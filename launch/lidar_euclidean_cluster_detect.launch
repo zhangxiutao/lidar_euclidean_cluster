@@ -22,7 +22,7 @@
   <arg name="use_vector_map" default="false" />
   <arg name="wayarea_gridmap_layer" default="wayarea" />
 
-  <arg name="output_frame" default="os1_lidar" />
+  <arg name="output_frame" default="velodyne" />
 
   <arg name="remove_points_upto" default="0.0" />
 
@@ -35,11 +35,11 @@
 
     <!-- rosrun lidar_tracker euclidean_cluster _points_node:="" -->
   <node pkg="lidar_euclidean_cluster_detect" type="lidar_euclidean_cluster_detect"
-        name="lidar_euclidean_cluster_detect" output="screen" launch-prefix="terminator -x gdb">
+        name="lidar_euclidean_cluster_detect" output="screen">
 
     <param name="points_node"
            value="$(arg points_node)"/> <!-- Can be used to select which pointcloud node will be used as input for the clustering -->
-    <param name="min_cluster_height" value="0.3"/>
+    <param name="min_cluster_height" value="0.5"/>
     <param name="radius_outlier_removal" value="0.1"/>
     <param name="neighbours_outlier_removal" value="10"/>
     <param name="ransac_height" value="1.0000"/>
