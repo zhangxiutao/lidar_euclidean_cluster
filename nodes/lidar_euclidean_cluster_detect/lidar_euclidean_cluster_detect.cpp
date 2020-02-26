@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <stdlib.h>
 #include <numeric>
+#include <iterator>
 
 #include <ros/ros.h>
 #include <pcl/common/impl/angles.hpp>
@@ -188,6 +189,30 @@ std::string type2str(int type) {
   return r;
 }
 
+float angleBetween(const Point &v1, const Point &v2)
+{
+    float len1 = sqrt(v1.x * v1.x + v1.y * v1.y);
+    float len2 = sqrt(v2.x * v2.x + v2.y * v2.y);
+    if (len1 != 0 && len2 != 0)
+    {
+      float dot = v1.x * v2.x + v1.y * v2.y;
+
+      float a = dot / (len1 * len2);
+
+      if (a >= 1.0)
+          return 0.0;
+      else if (a <= -1.0)
+          return CV_PI;
+      else
+          return acos(a); // 0..PI
+    }
+    else
+    {
+      return 0.0;
+    }
+
+}
+
 double euclidean_distance(cv::Point& p1, cv::Point& p2)
 {
   return sqrt((p1.x - p2.x) * (p1.x - p2.x) + (p1.y - p2.y) * (p1.y - p2.y));
@@ -246,6 +271,28 @@ cv::Point coodinateTransformationFromPclToMat(T in_point)
     return cv::Point(int(in_point.y*_birdview_scale+_birdview_width/2), int(-in_point.x*_birdview_scale+_birdview_height));
   }
 }
+
+// static bool lineIntersection(const cv::Point2f &a1, const cv::Point2f &b1, const cv::Point2f &a2,
+//                              const cv::Point2f &b2, cv::Point2f &intersection) {
+//     double A1 = b1.y - a1.y;
+//     double B1 = a1.x - b1.x;
+//     double C1 = (a1.x * A1) + (a1.y * B1);
+
+//     double A2 = b2.y - a2.y;
+//     double B2 = a2.x - b2.x;
+//     double C2 = (a2.x * A2) + (a2.y * B2);
+
+//     double det = (A1 * B2) - (A2 * B1);
+
+//     if (!almostEqual(det, 0)) {
+//         intersection.x = static_cast<float>(((C1 * B2) - (C2 * B1)) / (det));
+//         intersection.y = static_cast<float>(((C2 * A1) - (C1 * A2)) / (det));
+
+//         return true;
+//     }
+
+//     return false;
+// }
 
 void polyfit(std::vector<cv::Point>& in_points, int n)
 {
@@ -465,59 +512,120 @@ cv::Point calculateAveragePoint(std::vector<cv::Point>& in_points)
   return average_point;
 }
 
-void getSensorOrientation(int num_centroids_last_frame, int num_centroids_this_frame, 
+void seperateAndFittingLanes(int num_centroids_last_frame, int num_centroids_this_frame, 
 std::vector<cv::Point>& centroids_filtered_last_frame, std::vector<cv::Point>& centroids_filtered_this_frame, 
 Matrix<double>& association_Mat)
 {
+  static cv::Point vec_average_last; //the last 7th frame
+  static bool first_vec_average_flag = true;
   _visual_linefitting_mat_8UC3 = _visual_linefitting_mat_8UC3&(cv::Scalar(0));
   std::vector<cv::Point> vecs_displacement;
   std::vector<cv::Point> points_left;
+  std::vector<cv::Point> points_left_last;
   std::vector<cv::Point> points_right;
+  std::vector<cv::Point> points_right_last;
   cv::Point vec_average;
   cv::Point vec_sensor_orientation;
   cv::Point point_sensor_position(int(_birdview_width / 2), int(_birdview_height));
+  
   for (int row = 0 ; row < num_centroids_last_frame ; row++)
   {
     for (int col = 0 ; col < num_centroids_this_frame ; col++) 
     {
       if (association_Mat(row, col) == 0)
       {
-        cv::line(_visual_linefitting_mat_8UC3, centroids_filtered_last_frame[row], centroids_filtered_this_frame[col], cv::Scalar(0, 0, 255));
-        vecs_displacement.push_back(getDisplacementVector(centroids_filtered_this_frame[col], centroids_filtered_last_frame[row]));
+        if (euclidean_distance(centroids_filtered_last_frame[row], centroids_filtered_this_frame[col]) < 100)
+        {
+          cv::line(_visual_linefitting_mat_8UC3, centroids_filtered_last_frame[row], centroids_filtered_this_frame[col], cv::Scalar(0, 0, 255));
+          vecs_displacement.push_back(getDisplacementVector(centroids_filtered_this_frame[col], centroids_filtered_last_frame[row]));
+        }
       }
     }
-    if (!vecs_displacement.empty())
+  }
+
+  if (!vecs_displacement.empty())
+  {
+    if (first_vec_average_flag) //what if at the first frame we have wrongly matched?
+    {
+      vec_average_last = calculateAveragePoint(vecs_displacement);
+      first_vec_average_flag = false;
+    }
+    else
     {
       vec_average = calculateAveragePoint(vecs_displacement); //sometimes vecs_displacement is empty(no matching)
-      // ROS_INFO("vec_average is (%d,%d)", vec_average.x, vec_average.y);
-      // if (vec_average.x < -100 || vec_average.y < -100)
-      // {
-      //   ROS_INFO("???????????");
-      // }
-      vec_sensor_orientation.x = vec_average.x + point_sensor_position.x;
-      vec_sensor_orientation.y = vec_average.y + point_sensor_position.y;
-      for (auto centroid:centroids_filtered_this_frame)
+      float angle_varied = angleBetween(vec_average_last, vec_average);
+      if (angle_varied >= (CV_PI / 12)) //15 degrees
       {
-        if ((centroid.x * vec_average.y - vec_average.x * centroid.y + vec_average.x * point_sensor_position.y - point_sensor_position.x * vec_average.y) > 0)
-        {
-          points_left.push_back(centroid);
-		      cv::circle(_visual_linefitting_mat_8UC3, centroid, 15, Scalar(0, 255, 0), CV_FILLED, CV_AA);
-        }
-        else
-        {
-          points_right.push_back(centroid);
-		      cv::circle(_visual_linefitting_mat_8UC3, centroid, 15, Scalar(255, 0, 0), CV_FILLED, CV_AA);
-        }
+        vec_average = vec_average_last;
       }
-      cv::line(_visual_linefitting_mat_8UC3, point_sensor_position, vec_sensor_orientation, cv::Scalar(255, 255, 255));
+      vec_average_last = vec_average;
     }
+
+    vec_sensor_orientation.x = 1000 * vec_average.x + point_sensor_position.x;
+    vec_sensor_orientation.y = 1000 * vec_average.y + point_sensor_position.y;
+    for (auto centroid:centroids_filtered_this_frame)
+    {
+      if ((centroid.x * vec_average.y - vec_average.x * centroid.y + vec_average.x * point_sensor_position.y - point_sensor_position.x * vec_average.y) > 0)
+      {
+        points_left.push_back(centroid);
+        cv::circle(_visual_linefitting_mat_8UC3, centroid, 15, Scalar(0, 255, 0), CV_FILLED, CV_AA);
+      }
+      else
+      {
+        points_right.push_back(centroid);
+        cv::circle(_visual_linefitting_mat_8UC3, centroid, 15, Scalar(255, 0, 0), CV_FILLED, CV_AA);
+      }
+    }
+    
+    for (auto centroid:centroids_filtered_last_frame)
+    {
+      if ((centroid.x * vec_average.y - vec_average.x * centroid.y + vec_average.x * point_sensor_position.y - point_sensor_position.x * vec_average.y) > 0)
+      {
+        points_left_last.push_back(centroid);
+        cv::circle(_visual_linefitting_mat_8UC3, centroid, 15, Scalar(0, 100, 0), CV_FILLED, CV_AA);
+      }
+      else
+      {
+        points_right_last.push_back(centroid);
+        cv::circle(_visual_linefitting_mat_8UC3, centroid, 15, Scalar(100, 0, 0), CV_FILLED, CV_AA);
+      }
+    }
+
+    if (!points_left.empty())
+    {
+      sort(points_left.begin(), points_left.end(), 
+        [](const Point & a, const Point & b) -> bool
+      { 
+        return a.y > b.y; 
+      });   //descending order
+      for(std::vector<Point>::iterator it = points_left.begin(); it != points_left.end()-1; ++it)
+      {
+        cv::line(_visual_linefitting_mat_8UC3, *it, *(next(it)), cv::Scalar(255, 255, 255));
+      }
+    }
+
+    if (!points_right.empty())
+    {
+      sort(points_right.begin(), points_right.end(), 
+        [](const Point & a, const Point & b) -> bool
+      { 
+          return a.y > b.y; 
+      });   //descending order
+      for(std::vector<Point>::iterator it_right = points_right.begin(); it_right != points_right.end()-1; ++it_right)
+      {
+        cv::line(_visual_linefitting_mat_8UC3, *it_right, *(next(it_right)), cv::Scalar(255, 255, 255));
+      }
+    }
+
+    // lineIntersection();
+    cv::line(_visual_linefitting_mat_8UC3, point_sensor_position, vec_sensor_orientation, cv::Scalar(255, 255, 255));
   }
 }
 
 void findLane(autoware_msgs::Centroids &in_centroids, int n)
 {
   //remember that in_centroids may be invalid, check the validity
-  static unsigned int state;
+  static unsigned int state; //0-not yet entered 1-confirming entering 2-entered 3-confirming leaving
   static bool _construction_site_flag = false;
   static bool _construction_site_flag_last = false;
   static std::vector<cv::Point> centroids_filtered_last_frame;
@@ -570,7 +678,7 @@ void findLane(autoware_msgs::Centroids &in_centroids, int n)
         ROS_INFO("yes");
         association_Mat = dataAssociation(num_centroids_filtered_last_frame, num_centroids_filtered_this_frame,
         centroids_filtered_last_frame, centroids_filtered_this_frame);
-        getSensorOrientation(num_centroids_filtered_last_frame, num_centroids_filtered_this_frame, 
+        seperateAndFittingLanes(num_centroids_filtered_last_frame, num_centroids_filtered_this_frame, 
         centroids_filtered_last_frame, centroids_filtered_this_frame, association_Mat);
       }   
       else if (num_centroids_filtered_this_frame == 0 || num_centroids_filtered_last_frame == 0)   
