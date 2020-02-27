@@ -154,9 +154,10 @@ tf::TransformListener *_transform_listener;
 tf::TransformListener *_vectormap_transform_listener;
 
 //image
+static bool _first_frame_batches = true;
 static int _visual_clear_flag = false;
 static int _birdview_scale = 50;
-const int _buffer_size = 1;
+const int _buffer_size = 8;
 static int _frame_count = 0;
 static int _birdview_width = 1000;
 static int _birdview_height = 1000;
@@ -333,8 +334,6 @@ void filterCentroids(autoware_msgs::Centroids &in_centroids, std::vector<std::ve
 		cv::Point ipt(coodinateTransformationFromPclToMat<geometry_msgs::Point>(centroid));
     for(int i = 0; i< contours.size(); i++)
     {
-      cv::drawContours(_birdview_buffer_8UC3[0], contours, i, cv::Scalar(0, 0, 255), 2, 8);       
-
       if (pointPolygonTest(contours[i], ipt, false) == 1) //1 inside, 0 edge, -1 outside, notice that -1 is also true
       {
         centroids_filtered.push_back(ipt);
@@ -352,7 +351,7 @@ void centroidsToMat(autoware_msgs::Centroids &in_centroids)
 		cv::Point ipt(coodinateTransformationFromPclToMat<geometry_msgs::Point>(centroid));
 		cv::circle(birdview_mat_8UC3, ipt, 30, Scalar(255, 255, 255), CV_FILLED, CV_AA);
 	}
-  _birdview_buffer_8UC3[_frame_count % _buffer_size] = birdview_mat_8UC3;
+  _birdview_buffer_8UC3[_frame_count] = birdview_mat_8UC3;
 }
 
 void visualizeFitting(autoware_msgs::Centroids &in_centroids, int n)
@@ -374,8 +373,7 @@ void visualizeFitting(autoware_msgs::Centroids &in_centroids, int n)
   // cv::Mat temp_mat;
   // cv::cvtColor(_filtered_mat_8UC1, temp_mat, COLOR_GRAY2BGR);
   // cv::bitwise_or(_visual_linefitting_mat_8UC3, temp_mat, _visual_linefitting_mat_8UC3);
-  if (_frame_count == 4)
-  {
+
     // cv::Mat temp_mat;
     // cv::cvtColor(_filtered_mat_8UC1, temp_mat, COLOR_GRAY2BGR);
     // cv::bitwise_or(_visual_linefitting_mat_8UC3, temp_mat, _visual_linefitting_mat_8UC3);
@@ -395,13 +393,12 @@ void visualizeFitting(autoware_msgs::Centroids &in_centroids, int n)
     //     circle(_visual_linefitting_mat_8UC3, ipt, 1, Scalar(255), CV_FILLED, CV_AA);
     //   }
     // }
-
-  }
   cv::Mat resized_mat; 
   cv::resize(_visual_linefitting_mat_8UC3, resized_mat, cv::Size(_visual_linefitting_mat_8UC3.cols * 0.5,_visual_linefitting_mat_8UC3.rows * 0.5));
-  cv::imshow("origin", _birdview_buffer_8UC3[_frame_count % _buffer_size]);
+  cv::imshow("origin", _birdview_buffer_8UC3[_frame_count]);
   cv::imshow("_filtered_mat_8UC1", _filtered_mat_8UC1);
   cv::imshow("_visual_linefitting_mat_8UC3", resized_mat);
+  cv::imshow("_track_mat_8UC1", _track_mat_8UC1);
 }
 
 void outlierRemoval(const pcl::PointCloud<pcl::PointXYZ>::Ptr in_cloud_ptr,
@@ -437,29 +434,27 @@ void intensityFilter(const pcl::PointCloud<pcl::PointXYZI>::Ptr in_cloud_ptr,
   }    
 }
 
-void filterContours(std::vector<std::vector<cv::Point>>& contours_filtered)
+//filter those centroids which last for short frames (are not stable)
+void findAndGetFilteredContours(std::vector<std::vector<cv::Point>>& contours_filtered)
 {
-    cv::Mat birdview_gray;
-    cv::cvtColor(_birdview_buffer_8UC3[_frame_count % _buffer_size], birdview_gray, cv::COLOR_BGR2GRAY);
-    cv::bitwise_or(_track_mat_8UC1, birdview_gray, _track_mat_8UC1);
-    std::vector<std::vector<cv::Point>> contours;
-    std::vector<std::vector<cv::Point>> centroids_filtered_second;
-	  std::vector<cv::Vec4i> hierarchy; 
-    std::vector<cv::Point> centroids_filtered;
-    std::vector<cv::Point> centroids_left_lane; 
-    std::vector<cv::Point> centroids_right_lane; 
+  std::vector<std::vector<cv::Point>> contours;
+  std::vector<std::vector<cv::Point>> centroids_filtered_second;
+  std::vector<cv::Vec4i> hierarchy; 
+  std::vector<cv::Point> centroids_filtered;
+  std::vector<cv::Point> centroids_left_lane; 
+  std::vector<cv::Point> centroids_right_lane; 
 
-    cv::findContours(_track_mat_8UC1, contours, hierarchy, CV_RETR_TREE, CV_CHAIN_APPROX_SIMPLE, Point(0, 0));
-    _filtered_mat_8UC1 = _filtered_mat_8UC1&(cv::Scalar(0));
+  cv::findContours(_track_mat_8UC1, contours, hierarchy, CV_RETR_TREE, CV_CHAIN_APPROX_SIMPLE, Point(0, 0));
+  _filtered_mat_8UC1 = _filtered_mat_8UC1&(cv::Scalar(0));
 
-    for(int i = 0; i< contours.size(); i++)
-    {
-      if (contourArea(contours[i]) >= 9000.0)
-      { 
-        cv::drawContours(_filtered_mat_8UC1, contours, i, cv::Scalar(255), 2, 8);   
-        contours_filtered.push_back(contours[i]);
-      }
+  for(int i = 0; i< contours.size(); i++)
+  {
+    if (contourArea(contours[i]) >= 9000.0)
+    { 
+      cv::drawContours(_filtered_mat_8UC1, contours, i, cv::Scalar(255), 2, 8);   
+      contours_filtered.push_back(contours[i]);
     }
+  }
 }
 
 Matrix<double> dataAssociation(int num_centroids_last_frame, int num_centroids_this_frame, 
@@ -626,33 +621,33 @@ void findLane(autoware_msgs::Centroids &in_centroids, int n)
 {
   //remember that in_centroids may be invalid, check the validity
   static unsigned int state; //0-not yet entered 1-confirming entering 2-entered 3-confirming leaving
+  static bool first_find_lane = true;
   static bool _construction_site_flag = false;
   static bool _construction_site_flag_last = false;
   static std::vector<cv::Point> centroids_filtered_last_frame;
   static int num_centroids_filtered_last_frame;
   Matrix<double> association_Mat;
-  if (_frame_count == 0) //0 1 2 3 4
+  std::vector<std::vector<cv::Point>> contours_filtered_last_frame;
+  std::vector<std::vector<cv::Point>> contours_filtered_this_frame;
+  std::vector<cv::Point> centroids_filtered_this_frame;
+  int num_centroids_filtered_this_frame;
+
+  if (!first_find_lane)
   {
-    cv::cvtColor(_birdview_buffer_8UC3[_frame_count % _buffer_size], _track_mat_8UC1, cv::COLOR_BGR2GRAY);
-  }
-  else if (_frame_count == 3)
-  {
-    std::vector<std::vector<cv::Point>> contours_filtered_last_frame;
-    filterContours(contours_filtered_last_frame);
-    centroids_filtered_last_frame.clear();
-    filterCentroids(in_centroids, contours_filtered_last_frame, centroids_filtered_last_frame);
-    num_centroids_filtered_last_frame = centroids_filtered_last_frame.size();    
-  }
-  else if (_frame_count == 4)
-  {
-    std::vector<std::vector<cv::Point>> contours_filtered_this_frame;
-    static std::vector<cv::Point> centroids_filtered_this_frame;
-    int num_centroids_filtered_this_frame;
-    filterContours(contours_filtered_this_frame);
+    findAndGetFilteredContours(contours_filtered_this_frame);
     centroids_filtered_this_frame.clear();
     filterCentroids(in_centroids, contours_filtered_this_frame, centroids_filtered_this_frame);
-    num_centroids_filtered_this_frame = centroids_filtered_this_frame.size();
-    _visual_clear_flag = false;
+    num_centroids_filtered_this_frame = centroids_filtered_this_frame.size();    
+    // _visual_clear_flag = false;
+
+    _track_mat_8UC1 = _track_mat_8UC1 & (cv::Scalar(0));
+    for (int i = 0; i < _buffer_size; i++)
+    {
+      cv::Mat birdview_gray;
+      cv::cvtColor(_birdview_buffer_8UC3[i], birdview_gray, cv::COLOR_BGR2GRAY);
+      cv::bitwise_or(_track_mat_8UC1, birdview_gray, _track_mat_8UC1);
+    }
+
     if (state == 0)
     {
       if (num_centroids_filtered_this_frame > 1 && num_centroids_filtered_last_frame > 1)      
@@ -698,12 +693,15 @@ void findLane(autoware_msgs::Centroids &in_centroids, int n)
       }     
     }
     ROS_INFO("%d", state);
+    centroids_filtered_last_frame = centroids_filtered_this_frame;
+    num_centroids_filtered_last_frame = num_centroids_filtered_this_frame;
   }
   else
-  { 
-    cv::Mat birdview_gray;
-    cv::cvtColor(_birdview_buffer_8UC3[_frame_count % _buffer_size], birdview_gray, cv::COLOR_BGR2GRAY);
-    cv::bitwise_or(_track_mat_8UC1, birdview_gray, _track_mat_8UC1);
+  {
+    findAndGetFilteredContours(contours_filtered_last_frame);
+    filterCentroids(in_centroids, contours_filtered_last_frame, centroids_filtered_last_frame);
+    num_centroids_filtered_last_frame = contours_filtered_last_frame.size();
+    first_find_lane = false;
   }
 }
 
@@ -1455,14 +1453,18 @@ void velodyne_callback(const sensor_msgs::PointCloud2ConstPtr& in_sensor_cloud)
     publishCloudClusters(&_pub_clusters_message, cloud_clusters, _output_frame, _pcl_header); //autoware_msgs::CloudClusterArray
 
     centroidsToMat(centroids);
-    findLane(centroids, 3);
-    visualizeFitting(centroids, 3);
+    if (!_first_frame_batches)
+    {
+      findLane(centroids, 3);
+      visualizeFitting(centroids, 3);
+    }
     cv::waitKey(1);
     _using_sensor_cloud = false;
   }
   _frame_count++;
-  if (_frame_count == 5)
+  if (_frame_count == _buffer_size)
   {
+    _first_frame_batches = false;
     _frame_count = 0;
   }
 }
