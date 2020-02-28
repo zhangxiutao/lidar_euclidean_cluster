@@ -67,6 +67,7 @@
 #include <opencv2/core/version.hpp>
 #include "munkres/munkres.h"
 #include "munkres/adapters/boostmatrixadapter.h"
+#include "spline.h"
 
 #if (CV_MAJOR_VERSION == 3)
 
@@ -157,11 +158,11 @@ tf::TransformListener *_vectormap_transform_listener;
 static bool _first_frame_batches = true;
 static int _visual_clear_flag = false;
 static int _birdview_scale = 50;
-const int _buffer_size = 8;
+const int _img_buffer_size = 8;
 static int _frame_count = 0;
 static int _birdview_width = 1000;
 static int _birdview_height = 1000;
-static cv::Mat _birdview_buffer_8UC3[_buffer_size];
+static cv::Mat _birdview_buffer_8UC3[_img_buffer_size];
 static cv::Mat _track_mat_8UC1(_birdview_height, _birdview_width, CV_8UC1, cv::Scalar(0));
 static cv::Mat _filtered_mat_8UC1 = Mat::zeros(_track_mat_8UC1.size(), CV_8UC1);
 static cv::Mat _coeffient_linefitting_mat_64F;
@@ -507,11 +508,33 @@ cv::Point calculateAveragePoint(std::vector<cv::Point>& in_points)
   return average_point;
 }
 
+void predictTrajectory(cv::Point* velocity_vectors, cv::Point* predicted_trajectory, const unsigned int velocity_vectors_buffer_size)
+{
+  tk::spline s;
+  float control_point_x = 0;
+  float control_point_y = 0;
+  float control_points_x[velocity_vectors_buffer_size + 1];
+  float control_points_y[velocity_vectors_buffer_size + 1];
+
+  for (int i = 1; i < velocity_vectors_buffer_size; i++)
+  {
+    control_points_x[i] = control_point.x + v.x;
+    control_points_y[i] = control_point.y + v.y;
+  }
+
+  s.set_boundary(tk::spline::second_deriv, 0.0,
+                  tk::spline::first_deriv, -2.0, false);
+  s.set_points(control_points_x, control_points_y);
+  
+  
+}
+
 void seperateAndFittingLanes(int num_centroids_last_frame, int num_centroids_this_frame, 
 std::vector<cv::Point>& centroids_filtered_last_frame, std::vector<cv::Point>& centroids_filtered_this_frame, 
 Matrix<double>& association_Mat)
 {
-  static cv::Point vec_average_last; //the last 7th frame
+  static float control_points[_img_buffer_size];
+  static cv::Point vec_average_last;
   static bool first_vec_average_flag = true;
   _visual_linefitting_mat_8UC3 = _visual_linefitting_mat_8UC3&(cv::Scalar(0));
   std::vector<cv::Point> vecs_displacement;
@@ -522,7 +545,13 @@ Matrix<double>& association_Mat)
   cv::Point vec_average;
   cv::Point vec_sensor_orientation;
   cv::Point point_sensor_position(int(_birdview_width / 2), int(_birdview_height));
-  
+  //trajectory prediction
+  static bool first_velocity_vectors_frame_batch = true;
+  static unsigned int velocity_vectors_frame_count = 0;
+  const unsigned int velocity_vectors_buffer_size = 5;
+  static cv::Point velocity_vectors_buffer[velocity_vectors_buffer_size];
+  cv::Point predicted_trajectory[velocity_vectors_buffer_size];
+
   for (int row = 0 ; row < num_centroids_last_frame ; row++)
   {
     for (int col = 0 ; col < num_centroids_this_frame ; col++) 
@@ -542,19 +571,32 @@ Matrix<double>& association_Mat)
   {
     if (first_vec_average_flag) //what if at the first frame we have wrongly matched?
     {
-      vec_average_last = calculateAveragePoint(vecs_displacement);
+      // vec_average_last = calculateAveragePoint(vecs_displacement);
+      vec_average_last = cv::Point(0, -50);
       first_vec_average_flag = false;
     }
     else
     {
       vec_average = calculateAveragePoint(vecs_displacement); //sometimes vecs_displacement is empty(no matching)
       float angle_varied = angleBetween(vec_average_last, vec_average);
-      if (angle_varied >= (CV_PI / 12)) //15 degrees
+      if (angle_varied >= (CV_PI / 12)) //15 degrees difference between frames should not be larget than 15 degrees
       {
         vec_average = vec_average_last;
       }
       vec_average_last = vec_average;
+      velocity_vectors_buffer[velocity_vectors_frame_count] = vec_average;
+      if (!first_velocity_vectors_frame_batch)
+      {
+        predictTrajectory(velocity_vectors_buffer, predicted_trajectory, velocity_vectors_buffer_size);
+      }
     }
+
+    velocity_vectors_frame_count++;
+    if (velocity_vectors_frame_count == velocity_vectors_buffer_size)
+    {
+      first_velocity_vectors_frame_batch = false;
+      velocity_vectors_frame_count = 0;
+    }    
 
     vec_sensor_orientation.x = 1000 * vec_average.x + point_sensor_position.x;
     vec_sensor_orientation.y = 1000 * vec_average.y + point_sensor_position.y;
@@ -641,7 +683,7 @@ void findLane(autoware_msgs::Centroids &in_centroids, int n)
     // _visual_clear_flag = false;
 
     _track_mat_8UC1 = _track_mat_8UC1 & (cv::Scalar(0));
-    for (int i = 0; i < _buffer_size; i++)
+    for (int i = 0; i < _img_buffer_size; i++)
     {
       cv::Mat birdview_gray;
       cv::cvtColor(_birdview_buffer_8UC3[i], birdview_gray, cv::COLOR_BGR2GRAY);
@@ -1462,7 +1504,7 @@ void velodyne_callback(const sensor_msgs::PointCloud2ConstPtr& in_sensor_cloud)
     _using_sensor_cloud = false;
   }
   _frame_count++;
-  if (_frame_count == _buffer_size)
+  if (_frame_count == _img_buffer_size)
   {
     _first_frame_batches = false;
     _frame_count = 0;
@@ -1498,7 +1540,7 @@ int main(int argc, char **argv)
   _pub_clusters_message = h.advertise<autoware_msgs::CloudClusterArray>("/detection/lidar_detector/cloud_clusters", 1);
   _pub_detected_objects = h.advertise<autoware_msgs::DetectedObjectArray>("/detection/lidar_detector/objects", 1);
   std::cout << _birdview_buffer_8UC3 << std::endl;
-  std::fill_n(_birdview_buffer_8UC3, _buffer_size, Mat(_birdview_height, _birdview_width, CV_8UC1, cv::Scalar(0)));
+  std::fill_n(_birdview_buffer_8UC3, _img_buffer_size, Mat(_birdview_height, _birdview_width, CV_8UC1, cv::Scalar(0)));
   std::string points_topic, gridmap_topic;
 
   _using_sensor_cloud = false;
