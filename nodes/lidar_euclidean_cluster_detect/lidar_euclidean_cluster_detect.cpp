@@ -166,7 +166,7 @@ static cv::Mat _birdview_buffer_8UC3[_img_buffer_size];
 static cv::Mat _track_mat_8UC1(_birdview_height, _birdview_width, CV_8UC1, cv::Scalar(0));
 static cv::Mat _filtered_mat_8UC1 = Mat::zeros(_track_mat_8UC1.size(), CV_8UC1);
 static cv::Mat _coeffient_linefitting_mat_64F;
-static cv::Mat _visual_linefitting_mat_8UC3 = Mat::zeros(_track_mat_8UC1.size(), CV_8UC3);
+static cv::Mat _visual_linefitting_mat_8UC3 = Mat::zeros(1500, 1000, CV_8UC3);
 
 std::string type2str(int type) {
   std::string r;
@@ -333,6 +333,7 @@ void filterCentroids(autoware_msgs::Centroids &in_centroids, std::vector<std::ve
 	for (auto centroid:in_centroids.points)
 	{
 		cv::Point ipt(coodinateTransformationFromPclToMat<geometry_msgs::Point>(centroid));
+    cv::circle(_filtered_mat_8UC1, ipt, 3, Scalar(255), 2, CV_AA);
     for(int i = 0; i< contours.size(); i++)
     {
       if (pointPolygonTest(contours[i], ipt, false) == 1) //1 inside, 0 edge, -1 outside, notice that -1 is also true
@@ -342,6 +343,11 @@ void filterCentroids(autoware_msgs::Centroids &in_centroids, std::vector<std::ve
       }
     }
 	}
+  // char path [1000];
+  // static int count = 0;
+  // sprintf (path, "/home/autoware/shared_dir/debugfolder/%d.jpg", count);
+  // cv::imwrite(path, _filtered_mat_8UC1);
+  // count++;
 }
 
 void centroidsToMat(autoware_msgs::Centroids &in_centroids)
@@ -361,11 +367,7 @@ void visualizeFitting(autoware_msgs::Centroids &in_centroids, int n)
   int _birdview_height = 1000;
   int _birdview_scale = 50;
   int num_y_polyline = 1000;
-  auto minmax_element_x = std::minmax_element(in_centroids.points.begin(), in_centroids.points.end(), less_by_x);
-  auto max_element_y = std::max_element(in_centroids.points.begin(), in_centroids.points.end(), less_by_y);
-  float x_min = (*minmax_element_x.first).x;
-  float x_max = (*minmax_element_x.second).x;
-  float y_max = (*max_element_y).y;
+
   // if (!_visual_clear_flag)
   // {
   //   _visual_linefitting_mat_8UC3 = _visual_linefitting_mat_8UC3&(cv::Scalar(0,0,0));
@@ -435,7 +437,7 @@ void intensityFilter(const pcl::PointCloud<pcl::PointXYZI>::Ptr in_cloud_ptr,
   }    
 }
 
-//filter those centroids which last for short frames (are not stable)
+//filter those centroids which last for short frames (and are not stable)
 void findAndGetFilteredContours(std::vector<std::vector<cv::Point>>& contours_filtered)
 {
   std::vector<std::vector<cv::Point>> contours;
@@ -511,22 +513,43 @@ cv::Point calculateAveragePoint(std::vector<cv::Point>& in_points)
 void predictTrajectory(cv::Point* velocity_vectors, cv::Point* predicted_trajectory, const unsigned int velocity_vectors_buffer_size)
 {
   tk::spline s;
-  float control_point_x = 0;
-  float control_point_y = 0;
-  float control_points_x[velocity_vectors_buffer_size + 1];
-  float control_points_y[velocity_vectors_buffer_size + 1];
+  std::vector<double> control_points_x(velocity_vectors_buffer_size + 1), control_points_y(velocity_vectors_buffer_size + 1);
+  control_points_y[velocity_vectors_buffer_size] = 0;
+  control_points_x[velocity_vectors_buffer_size] = 0; 
+  cv::Point past_trajectory_offset;
 
-  for (int i = 1; i < velocity_vectors_buffer_size; i++)
+  for (int i = 1; i < (velocity_vectors_buffer_size + 1); i++)
   {
-    control_points_x[i] = control_point.x + v.x;
-    control_points_y[i] = control_point.y + v.y;
+    control_points_y[velocity_vectors_buffer_size - i] = control_points_y[velocity_vectors_buffer_size - i + 1] + velocity_vectors[i - 1].y;
+    control_points_x[velocity_vectors_buffer_size - i] = control_points_x[velocity_vectors_buffer_size - i + 1] + velocity_vectors[i - 1].x;
+  }
+
+  past_trajectory_offset.y = 1000 - control_points_y[0];
+  past_trajectory_offset.x = 500 - control_points_x[0];
+
+  for (int i = 0; i < (velocity_vectors_buffer_size + 1); i++)
+  {
+    control_points_y[i] = control_points_y[i] + past_trajectory_offset.y;
+    control_points_x[i] = control_points_x[i] + past_trajectory_offset.x;
   }
 
   s.set_boundary(tk::spline::second_deriv, 0.0,
                   tk::spline::first_deriv, -2.0, false);
-  s.set_points(control_points_x, control_points_y);
-  
-  
+  s.set_points(control_points_y, control_points_x);
+
+  for (int y = control_points_y[velocity_vectors_buffer_size]; y >= control_points_y[0]; y--)
+  {
+    cv::Point spline_point(int(s(y)), y);
+    cv::circle(_visual_linefitting_mat_8UC3, spline_point, 1, Scalar(100, 50, 30), 1, CV_AA);
+  }
+  // for(int i=-50; i<250; i++) {
+  //   double x=0.01*i;
+  //   printf("%f %f %f %f %f\n", x, s(x),
+  //           s.deriv(1,x), s.deriv(2,x), s.deriv(3,x));
+  //   // checking analytic derivatives and finite differences are close
+  //   assert(fabs(s.deriv(1,x)-deriv1(s,x)) < 1e-8);
+  //   assert(fabs(s.deriv(2,x)-deriv2(s,x)) < 1e-8);
+  // }
 }
 
 void seperateAndFittingLanes(int num_centroids_last_frame, int num_centroids_this_frame, 
@@ -637,7 +660,7 @@ Matrix<double>& association_Mat)
       });   //descending order
       for(std::vector<Point>::iterator it = points_left.begin(); it != points_left.end()-1; ++it)
       {
-        cv::line(_visual_linefitting_mat_8UC3, *it, *(next(it)), cv::Scalar(255, 255, 255));
+        cv::line(_visual_linefitting_mat_8UC3, *it, *(next(it)), cv::Scalar(0, 255, 0));
       }
     }
 
@@ -650,12 +673,17 @@ Matrix<double>& association_Mat)
       });   //descending order
       for(std::vector<Point>::iterator it_right = points_right.begin(); it_right != points_right.end()-1; ++it_right)
       {
-        cv::line(_visual_linefitting_mat_8UC3, *it_right, *(next(it_right)), cv::Scalar(255, 255, 255));
+        cv::line(_visual_linefitting_mat_8UC3, *it_right, *(next(it_right)), cv::Scalar(255, 0, 0));
       }
     }
 
     // lineIntersection();
     cv::line(_visual_linefitting_mat_8UC3, point_sensor_position, vec_sensor_orientation, cv::Scalar(255, 255, 255));
+    // char path [1000];
+    // static int count = 0;
+    // sprintf (path, "/home/autoware/shared_dir/debugfolder/%d.jpg", count);
+    // cv::imwrite(path, _visual_linefitting_mat_8UC3);
+    // count++;
   }
 }
 
@@ -676,12 +704,6 @@ void findLane(autoware_msgs::Centroids &in_centroids, int n)
 
   if (!first_find_lane)
   {
-    findAndGetFilteredContours(contours_filtered_this_frame);
-    centroids_filtered_this_frame.clear();
-    filterCentroids(in_centroids, contours_filtered_this_frame, centroids_filtered_this_frame);
-    num_centroids_filtered_this_frame = centroids_filtered_this_frame.size();    
-    // _visual_clear_flag = false;
-
     _track_mat_8UC1 = _track_mat_8UC1 & (cv::Scalar(0));
     for (int i = 0; i < _img_buffer_size; i++)
     {
@@ -689,6 +711,12 @@ void findLane(autoware_msgs::Centroids &in_centroids, int n)
       cv::cvtColor(_birdview_buffer_8UC3[i], birdview_gray, cv::COLOR_BGR2GRAY);
       cv::bitwise_or(_track_mat_8UC1, birdview_gray, _track_mat_8UC1);
     }
+
+    findAndGetFilteredContours(contours_filtered_this_frame);
+    centroids_filtered_this_frame.clear();
+    filterCentroids(in_centroids, contours_filtered_this_frame, centroids_filtered_this_frame);
+    num_centroids_filtered_this_frame = centroids_filtered_this_frame.size();    
+    // _visual_clear_flag = false;
 
     if (state == 0)
     {

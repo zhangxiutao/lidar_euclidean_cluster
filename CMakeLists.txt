@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 2.8.3)
 project(lidar_euclidean_cluster_detect)
 
+#add_compile_options(-O0)
 
 find_package(autoware_build_flags REQUIRED)
 
