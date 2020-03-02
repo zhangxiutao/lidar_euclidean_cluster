@@ -264,11 +264,11 @@ geometry_msgs::Point transformPoint(const geometry_msgs::Point& point, const tf:
 template <class T>
 cv::Point coodinateTransformationFromPclToMat(T in_point)
 {
-  if (_pcl_header.frame_id == "os1_lidar")
+  if (_pcl_header.frame_id == "/os1_lidar")
   { 
     return cv::Point(int(in_point.y*_birdview_scale+_birdview_width/2), int(in_point.x*_birdview_scale+_birdview_height));
   }
-  else if (_pcl_header.frame_id == "velodyne")
+  else if (_pcl_header.frame_id == "/velodyne")
   {
     return cv::Point(int(in_point.y*_birdview_scale+_birdview_width/2), int(-in_point.x*_birdview_scale+_birdview_height));
   }
@@ -537,11 +537,17 @@ void predictTrajectory(cv::Point* velocity_vectors, cv::Point* predicted_traject
                   tk::spline::first_deriv, -2.0, false);
   s.set_points(control_points_y, control_points_x);
 
-  for (int y = control_points_y[velocity_vectors_buffer_size]; y >= control_points_y[0]; y--)
+  for (int y = control_points_y[velocity_vectors_buffer_size]; y > control_points_y[0]; y--)
   {
     cv::Point spline_point(int(s(y)), y);
     cv::circle(_visual_linefitting_mat_8UC3, spline_point, 1, Scalar(100, 50, 30), 1, CV_AA);
   }
+
+  for (int y = 1000; y >= 500; y--)
+  {
+    cv::Point spline_point(int(s(y)), y);
+    cv::circle(_visual_linefitting_mat_8UC3, spline_point, 1, Scalar(30, 255, 30), 1, CV_AA);
+  }  
   // for(int i=-50; i<250; i++) {
   //   double x=0.01*i;
   //   printf("%f %f %f %f %f\n", x, s(x),
@@ -594,8 +600,8 @@ Matrix<double>& association_Mat)
   {
     if (first_vec_average_flag) //what if at the first frame we have wrongly matched?
     {
-      // vec_average_last = calculateAveragePoint(vecs_displacement);
-      vec_average_last = cv::Point(0, -50);
+      vec_average_last = calculateAveragePoint(vecs_displacement);
+      // vec_average_last = cv::Point(0, -50);
       first_vec_average_flag = false;
     }
     else
