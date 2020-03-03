@@ -155,6 +155,8 @@ tf::TransformListener *_transform_listener;
 tf::TransformListener *_vectormap_transform_listener;
 
 //image
+static bool _simulation = true;
+static bool _intensity_filter;
 static bool _first_frame_batches = true;
 static int _visual_clear_flag = false;
 static int _birdview_scale = 50;
@@ -268,7 +270,7 @@ cv::Point coodinateTransformationFromPclToMat(T in_point)
   { 
     return cv::Point(int(in_point.y*_birdview_scale+_birdview_width/2), int(in_point.x*_birdview_scale+_birdview_height));
   }
-  else if (_pcl_header.frame_id == "/velodyne")
+  else if (_pcl_header.frame_id == "velodyne")
   {
     return cv::Point(int(in_point.y*_birdview_scale+_birdview_width/2), int(-in_point.x*_birdview_scale+_birdview_height));
   }
@@ -352,6 +354,7 @@ void filterCentroids(autoware_msgs::Centroids &in_centroids, std::vector<std::ve
 
 void centroidsToMat(autoware_msgs::Centroids &in_centroids)
 {
+
   cv::Mat birdview_mat_8UC3(_birdview_width, _birdview_height, CV_8UC3, cv::Scalar::all(0));
 	for (auto centroid:in_centroids.points)
 	{
@@ -613,14 +616,17 @@ Matrix<double>& association_Mat)
         vec_average = vec_average_last;
       }
       vec_average_last = vec_average;
-      velocity_vectors_buffer[velocity_vectors_frame_count] = vec_average;
+      if (vec_average.y != 0) //prevent spline fitting from crashing
+      {
+        velocity_vectors_buffer[velocity_vectors_frame_count] = vec_average;
+        velocity_vectors_frame_count++;
+      }
       if (!first_velocity_vectors_frame_batch)
       {
         predictTrajectory(velocity_vectors_buffer, predicted_trajectory, velocity_vectors_buffer_size);
       }
     }
 
-    velocity_vectors_frame_count++;
     if (velocity_vectors_frame_count == velocity_vectors_buffer_size)
     {
       first_velocity_vectors_frame_batch = false;
@@ -634,12 +640,12 @@ Matrix<double>& association_Mat)
       if ((centroid.x * vec_average.y - vec_average.x * centroid.y + vec_average.x * point_sensor_position.y - point_sensor_position.x * vec_average.y) > 0)
       {
         points_left.push_back(centroid);
-        cv::circle(_visual_linefitting_mat_8UC3, centroid, 15, Scalar(0, 255, 0), CV_FILLED, CV_AA);
+        cv::circle(_visual_linefitting_mat_8UC3, centroid, 15, Scalar(0, 255, 0), 2, CV_AA);
       }
       else
       {
         points_right.push_back(centroid);
-        cv::circle(_visual_linefitting_mat_8UC3, centroid, 15, Scalar(255, 0, 0), CV_FILLED, CV_AA);
+        cv::circle(_visual_linefitting_mat_8UC3, centroid, 15, Scalar(255, 0, 0), 2, CV_AA);
       }
     }
     
@@ -648,12 +654,12 @@ Matrix<double>& association_Mat)
       if ((centroid.x * vec_average.y - vec_average.x * centroid.y + vec_average.x * point_sensor_position.y - point_sensor_position.x * vec_average.y) > 0)
       {
         points_left_last.push_back(centroid);
-        cv::circle(_visual_linefitting_mat_8UC3, centroid, 15, Scalar(0, 100, 0), CV_FILLED, CV_AA);
+        cv::circle(_visual_linefitting_mat_8UC3, centroid, 15, Scalar(0, 100, 0), 2, CV_AA);
       }
       else
       {
         points_right_last.push_back(centroid);
-        cv::circle(_visual_linefitting_mat_8UC3, centroid, 15, Scalar(100, 0, 0), CV_FILLED, CV_AA);
+        cv::circle(_visual_linefitting_mat_8UC3, centroid, 15, Scalar(100, 0, 0), 2, CV_AA);
       }
     }
 
@@ -685,11 +691,11 @@ Matrix<double>& association_Mat)
 
     // lineIntersection();
     cv::line(_visual_linefitting_mat_8UC3, point_sensor_position, vec_sensor_orientation, cv::Scalar(255, 255, 255));
-    // char path [1000];
-    // static int count = 0;
-    // sprintf (path, "/home/autoware/shared_dir/debugfolder/%d.jpg", count);
-    // cv::imwrite(path, _visual_linefitting_mat_8UC3);
-    // count++;
+    char path [1000];
+    static int count = 0;
+    sprintf (path, "/home/autoware/shared_dir/debugfolder/%d.jpg", count);
+    cv::imwrite(path, _visual_linefitting_mat_8UC3);
+    count++;
   }
 }
 
@@ -980,12 +986,17 @@ std::vector<ClusterPtr> clusterAndColorGpu(const pcl::PointCloud<pcl::PointXYZ>:
     cluster->SetCloud(in_cloud_ptr, it->points_in_cluster, _pcl_header, k, (int) _colors[k].val[0],
                       (int) _colors[k].val[1], (int) _colors[k].val[2], "", _pose_estimation);
     ros::param::get("/lidar_euclidean_cluster_detect/min_cluster_height",_min_cluster_height);
-    if (cluster->GetHeight() >= _min_cluster_height && cluster->GetWidth() <= 1 && cluster->GetLength() <= 0.8)
+    if (!_simulation)
+    {
+      if (cluster->GetHeight() >= _min_cluster_height && cluster->GetWidth() <= 1 && cluster->GetLength() <= 0.8)
+      {
+        clusters.push_back(cluster);
+      }
+    }
+    else
     {
       clusters.push_back(cluster);
     }
-
-    
     k++;
   }
   free(tmp_x);
@@ -1451,7 +1462,6 @@ void velodyne_callback(const sensor_msgs::PointCloud2ConstPtr& in_sensor_cloud)
   {
     _using_sensor_cloud = true;
 
-    pcl::PointCloud<pcl::PointXYZI>::Ptr current_sensor_cloud_ptr(new pcl::PointCloud<pcl::PointXYZI>);
     pcl::PointCloud<pcl::PointXYZ>::Ptr removed_points_cloud_ptr(new pcl::PointCloud<pcl::PointXYZ>);
     pcl::PointCloud<pcl::PointXYZ>::Ptr downsampled_cloud_ptr(new pcl::PointCloud<pcl::PointXYZ>);
     pcl::PointCloud<pcl::PointXYZ>::Ptr outlier_removed_cloud_ptr(new pcl::PointCloud<pcl::PointXYZ>);
@@ -1467,12 +1477,22 @@ void velodyne_callback(const sensor_msgs::PointCloud2ConstPtr& in_sensor_cloud)
     autoware_msgs::Centroids centroids;
     autoware_msgs::CloudClusterArray cloud_clusters;
 
-    pcl::fromROSMsg(*in_sensor_cloud, *current_sensor_cloud_ptr);
     
     _pcl_header = in_sensor_cloud->header;
     _output_frame = _pcl_header.frame_id;
 
-    intensityFilter(current_sensor_cloud_ptr, intensity_filtered_cloud_ptr);
+    if (_intensity_filter)
+    {
+      pcl::PointCloud<pcl::PointXYZI>::Ptr current_sensor_cloud_ptr(new pcl::PointCloud<pcl::PointXYZI>);
+      pcl::fromROSMsg(*in_sensor_cloud, *current_sensor_cloud_ptr);
+      intensityFilter(current_sensor_cloud_ptr, intensity_filtered_cloud_ptr);
+    }
+    else
+    {
+      pcl::PointCloud<pcl::PointXYZ>::Ptr current_sensor_cloud_ptr(new pcl::PointCloud<pcl::PointXYZ>);
+      pcl::fromROSMsg(*in_sensor_cloud, *current_sensor_cloud_ptr);
+      *intensity_filtered_cloud_ptr = *current_sensor_cloud_ptr;
+    }
     
     if (_remove_points_upto > 0.0)
     {
@@ -1600,6 +1620,10 @@ int main(int argc, char **argv)
   }
 
  /* Initialize tuning parameter */
+  private_nh.param("simulation", _simulation, true);
+  ROS_INFO("[%s] simulation: %d", __APP_NAME__, _simulation);
+  private_nh.param("intensity_filter", _intensity_filter, false);
+  ROS_INFO("[%s] intensity_filter: %d", __APP_NAME__, _intensity_filter);
   private_nh.param("min_cluster_height", _min_cluster_height, 0.5);
   ROS_INFO("[%s] min_cluster_height: %f", __APP_NAME__, _min_cluster_height);
   private_nh.param("ransac_height", _ransac_height, 1.0);
@@ -1608,12 +1632,20 @@ int main(int argc, char **argv)
   ROS_INFO("[%s] ransac_angle: %f", __APP_NAME__, _ransac_angle);  
   private_nh.param("downsample_cloud", _downsample_cloud, true);
   ROS_INFO("[%s] downsample_cloud: %d", __APP_NAME__, _downsample_cloud);
-  private_nh.param("remove_ground", _remove_ground, false);
+  private_nh.param("remove_ground", _remove_ground, true);
   ROS_INFO("[%s] remove_ground: %d", __APP_NAME__, _remove_ground);
   private_nh.param("leaf_size", _leaf_size, 0.1);
   ROS_INFO("[%s] leaf_size: %f", __APP_NAME__, _leaf_size);
-  private_nh.param("cluster_size_min", _cluster_size_min, 20);
-  ROS_INFO("[%s] cluster_size_min %d", __APP_NAME__, _cluster_size_min);
+  if (!_simulation)
+  {
+    private_nh.param("cluster_size_min", _cluster_size_min, 20);
+    ROS_INFO("[%s] cluster_size_min %d", __APP_NAME__, _cluster_size_min);
+  }
+  else
+  {
+    private_nh.param("cluster_size_min", _cluster_size_min, 0);
+    ROS_INFO("[%s] cluster_size_min %d", __APP_NAME__, _cluster_size_min);    
+  }
   private_nh.param("cluster_size_max", _cluster_size_max, 100000);
   ROS_INFO("[%s] cluster_size_max: %d", __APP_NAME__, _cluster_size_max);
   private_nh.param("pose_estimation", _pose_estimation, false);

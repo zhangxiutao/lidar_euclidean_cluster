@@ -1,7 +1,7 @@
 <!-- -->
 <launch>
   <arg name="points_node" default="/points_raw" /><!--CHANGE THIS TO READ WHETHER FROM VSCAN OR POINTS_RAW -->
-  <arg name="remove_ground" default="false" />
+  <arg name="remove_ground" default="true" />
   <arg name="downsample_cloud" default="true" /> <!-- Apply VoxelGrid Filter with the value given by "leaf_size"-->
   <arg name="leaf_size" default="0.1" /><!-- Voxel Grid Filter leaf size-->
   <arg name="cluster_size_min" default="20" /><!-- Minimum number of points to consider a cluster as valid-->
@@ -11,8 +11,9 @@
   <arg name="pose_estimation" default="true" />
   <arg name="clip_min_height" default="-1.3" />
   <arg name="clip_max_height" default="1.0" />
-  <arg name="intensity_filter" default="true" />
-
+  <arg name="intensity_filter" default="false" />
+  <arg name="simulation" default="true" />
+  
   <arg name="keep_lanes" default="true" />
   <arg name="keep_lane_left_distance" default="5" />
   <arg name="keep_lane_right_distance" default="5" />
@@ -36,7 +37,7 @@
 
     <!-- rosrun lidar_tracker euclidean_cluster _points_node:="" -->
   <node pkg="lidar_euclidean_cluster_detect" type="lidar_euclidean_cluster_detect"
-        name="lidar_euclidean_cluster_detect" output="screen">
+        name="lidar_euclidean_cluster_detect" output="screen" launch-prefix="terminator -x gdb">
     <!-- launch-prefix="terminator -x gdb" -->
     <param name="intensity_filter" value="$(arg intensity_filter)"/>
     <param name="points_node"
@@ -44,7 +45,7 @@
     <param name="min_cluster_height" value="0.5"/>
     <param name="radius_outlier_removal" value="0.1"/>
     <param name="neighbours_outlier_removal" value="10"/>
-    <param name="ransac_height" value="1.0000"/>
+    <param name="ransac_height" value="0.1"/>
     <param name="ransac_angle" value="20.0000"/>
     <param name="remove_ground" value="$(arg remove_ground)"/>
     <param name="downsample_cloud" value="$(arg downsample_cloud)"/>
