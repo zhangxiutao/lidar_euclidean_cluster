@@ -107,7 +107,6 @@ std_msgs::Header _pcl_header;
 
 std::string _output_frame;
 
-
 static double _radius_outlier_removal;
 static int _neighbours_outlier_removal;
 static bool _velodyne_transform_available;
@@ -119,11 +118,10 @@ static int _cluster_size_max;
 static const double _initial_quat_w = 1.0;
 static double _ransac_height;
 static double _ransac_angle;
-static bool _remove_ground;  // only ground
+static bool _remove_ground; // only ground
 static double _min_cluster_height;
 static bool _using_sensor_cloud;
 static bool _use_diffnormals;
-
 
 static double _clip_min_height;
 static double _clip_max_height;
@@ -166,68 +164,86 @@ static int _birdview_width = 1000;
 static int _birdview_height = 1000;
 static cv::Mat _birdview_buffer_8UC3[_img_buffer_size];
 static cv::Mat _track_mat_8UC1(_birdview_height, _birdview_width, CV_8UC1, cv::Scalar(0));
-static cv::Mat _filtered_mat_8UC1 = Mat::zeros(_track_mat_8UC1.size(), CV_8UC1);
+static cv::Mat _filtered_mat_8UC1 = Mat::zeros(_track_mat_8UC1.size(), CV_8UC1); //for debugging(the image cannot be used to get information).
+static cv::Mat _filteredAndBlurred_mat_8UC1 = Mat::zeros(_track_mat_8UC1.size(), CV_8UC1);
 static cv::Mat _coeffient_linefitting_mat_64F;
 static cv::Mat _visual_linefitting_mat_8UC3 = Mat::zeros(1500, 1000, CV_8UC3);
 
-std::string type2str(int type) {
+std::string type2str(int type)
+{
   std::string r;
 
   uchar depth = type & CV_MAT_DEPTH_MASK;
   uchar chans = 1 + (type >> CV_CN_SHIFT);
 
-  switch ( depth ) {
-    case CV_8U:  r = "8U"; break;
-    case CV_8S:  r = "8S"; break;
-    case CV_16U: r = "16U"; break;
-    case CV_16S: r = "16S"; break;
-    case CV_32S: r = "32S"; break;
-    case CV_32F: r = "32F"; break;
-    case CV_64F: r = "64F"; break;
-    default:     r = "User"; break;
+  switch (depth)
+  {
+  case CV_8U:
+    r = "8U";
+    break;
+  case CV_8S:
+    r = "8S";
+    break;
+  case CV_16U:
+    r = "16U";
+    break;
+  case CV_16S:
+    r = "16S";
+    break;
+  case CV_32S:
+    r = "32S";
+    break;
+  case CV_32F:
+    r = "32F";
+    break;
+  case CV_64F:
+    r = "64F";
+    break;
+  default:
+    r = "User";
+    break;
   }
 
   r += "C";
-  r += (chans+'0');
+  r += (chans + '0');
 
   return r;
 }
 
 float angleBetween(const Point &v1, const Point &v2)
 {
-    float len1 = sqrt(v1.x * v1.x + v1.y * v1.y);
-    float len2 = sqrt(v2.x * v2.x + v2.y * v2.y);
-    if (len1 != 0 && len2 != 0)
-    {
-      float dot = v1.x * v2.x + v1.y * v2.y;
+  float len1 = sqrt(v1.x * v1.x + v1.y * v1.y);
+  float len2 = sqrt(v2.x * v2.x + v2.y * v2.y);
+  if (len1 != 0 && len2 != 0)
+  {
+    float dot = v1.x * v2.x + v1.y * v2.y;
 
-      float a = dot / (len1 * len2);
+    float a = dot / (len1 * len2);
 
-      if (a >= 1.0)
-          return 0.0;
-      else if (a <= -1.0)
-          return CV_PI;
-      else
-          return acos(a); // 0..PI
-    }
-    else
-    {
+    if (a >= 1.0)
       return 0.0;
-    }
-
+    else if (a <= -1.0)
+      return CV_PI;
+    else
+      return acos(a); // 0..PI
+  }
+  else
+  {
+    return 0.0;
+  }
 }
 
-double euclidean_distance(cv::Point& p1, cv::Point& p2)
+double euclidean_distance(cv::Point &p1, cv::Point &p2)
 {
   return sqrt((p1.x - p2.x) * (p1.x - p2.x) + (p1.y - p2.y) * (p1.y - p2.y));
 }
 
-bool less_by_x(const geometry_msgs::Point& lhs, const geometry_msgs::Point& rhs)
+bool less_by_x(const geometry_msgs::Point &lhs, const geometry_msgs::Point &rhs)
 {
   return lhs.x < rhs.x;
 }
 
-bool less_by_y(const geometry_msgs::Point& lhs, const geometry_msgs::Point& rhs)
+bool less_by_y(const geometry_msgs::Point &lhs, const geometry_msgs::Point &rhs)
 {
   return lhs.y < rhs.y;
 }
@@ -250,7 +266,7 @@ tf::StampedTransform findTransform(const std::string &in_target_frame, const std
   return transform;
 }
 
-geometry_msgs::Point transformPoint(const geometry_msgs::Point& point, const tf::Transform& tf)
+geometry_msgs::Point transformPoint(const geometry_msgs::Point &point, const tf::Transform &tf)
 {
   tf::Point tf_point;
   tf::pointMsgToTF(point, tf_point);
@@ -267,12 +283,12 @@ template <class T>
 cv::Point coodinateTransformationFromPclToMat(T in_point)
 {
   if (_pcl_header.frame_id == "/os1_lidar")
-  { 
-    return cv::Point(int(in_point.y*_birdview_scale+_birdview_width/2), int(in_point.x*_birdview_scale+_birdview_height));
+  {
+    return cv::Point(int(in_point.y * _birdview_scale + _birdview_width / 2), int(in_point.x * _birdview_scale + _birdview_height));
   }
   else if (_pcl_header.frame_id == "velodyne")
   {
-    return cv::Point(int(-in_point.y*_birdview_scale+_birdview_width/2), int(-in_point.x*_birdview_scale+_birdview_height));
+    return cv::Point(int(-in_point.y * _birdview_scale + _birdview_width / 2), int(-in_point.x * _birdview_scale + _birdview_height));
   }
 }
 
@@ -298,53 +314,52 @@ cv::Point coodinateTransformationFromPclToMat(T in_point)
 //     return false;
 // }
 
-void polyfit(std::vector<cv::Point>& in_points, int n)
+void polyfit(std::vector<cv::Point> &in_points, int n)
 {
   int _birdview_width = 1000;
   int _birdview_height = 1000;
   int _birdview_scale = 50;
-	int size = in_points.size();
-	int x_num = n + 1;
-	cv::Mat mat_u(size, x_num, CV_64F);
-	cv::Mat mat_y(size, 1, CV_64F);
- 
-	for (int i = 0; i < mat_u.rows; ++i)
-		for (int j = 0; j < mat_u.cols; ++j)
-		{
+  int size = in_points.size();
+  int x_num = n + 1;
+  cv::Mat mat_u(size, x_num, CV_64F);
+  cv::Mat mat_y(size, 1, CV_64F);
+
+  for (int i = 0; i < mat_u.rows; ++i)
+    for (int j = 0; j < mat_u.cols; ++j)
+    {
       // double y_transformed = in_points[i].x * _birdview_scale + _birdview_height;
-			mat_u.at<double>(i, j) = pow(in_points[i].y, j);
-		}
- 
-	for (int i = 0; i < mat_y.rows; ++i)
-	{
+      mat_u.at<double>(i, j) = pow(in_points[i].y, j);
+    }
+
+  for (int i = 0; i < mat_y.rows; ++i)
+  {
     // double x_transformed = in_points[i].y * _birdview_scale + _birdview_width/2;
-		mat_y.at<double>(i, 0) = in_points[i].x;
-	}
+    mat_y.at<double>(i, 0) = in_points[i].x;
+  }
 
   std::string mat_u_type = type2str(mat_u.type());
   std::string mat_y_type = type2str(mat_y.type());
   // ROS_INFO("Matrix: %s %dx%d \n", mat_u_type.c_str(), mat_u.cols, mat_u.rows );
   // ROS_INFO("Matrix: %s %dx%d \n", mat_y_type.c_str(), mat_y.cols, mat_y.rows );
-	// _coeffient_linefitting_mat_64F = cv::Mat(x_num, 1, CV_64F);
-	_coeffient_linefitting_mat_64F = (mat_u.t()*mat_u).inv()*mat_u.t()*mat_y; //in the case of one point input, (mat_u.t()*mat_u) is singular, inv() generates all zero
-
+  // _coeffient_linefitting_mat_64F = cv::Mat(x_num, 1, CV_64F);
+  _coeffient_linefitting_mat_64F = (mat_u.t() * mat_u).inv() * mat_u.t() * mat_y; //in the case of one point input, (mat_u.t()*mat_u) is singular, inv() generates all zero
 }
 
-void filterCentroids(autoware_msgs::Centroids &in_centroids, std::vector<std::vector<cv::Point>>& contours, std::vector<cv::Point>& centroids_filtered)
+void filterCentroids(autoware_msgs::Centroids &in_centroids, std::vector<std::vector<cv::Point>> &contours, std::vector<cv::Point> &centroids_filtered)
 {
-	for (auto centroid:in_centroids.points)
-	{
-		cv::Point ipt(coodinateTransformationFromPclToMat<geometry_msgs::Point>(centroid));
-    cv::circle(_filtered_mat_8UC1, ipt, 3, Scalar(255), 2, CV_AA);
-    for(int i = 0; i< contours.size(); i++)
+  for (auto centroid : in_centroids.points)
+  {
+    cv::Point ipt(coodinateTransformationFromPclToMat<geometry_msgs::Point>(centroid));
+    // cv::circle(_filtered_mat_8UC1, ipt, 3, Scalar(255), 2, CV_AA); //for debugging
+    for (int i = 0; i < contours.size(); i++)
     {
       if (pointPolygonTest(contours[i], ipt, false) == 1) //1 inside, 0 edge, -1 outside, notice that -1 is also true
       {
         centroids_filtered.push_back(ipt);
-		    cv::circle(_filtered_mat_8UC1, ipt, 3, Scalar(255), 2, CV_AA);
+        cv::circle(_filtered_mat_8UC1, ipt, 3, Scalar(255), 2, CV_AA);
       }
     }
-	}
+  }
   // char path [1000];
   // static int count = 0;
   // sprintf (path, "/home/autoware/shared_dir/debugfolder/%d.jpg", count);
@@ -356,11 +371,11 @@ void centroidsToMat(autoware_msgs::Centroids &in_centroids)
 {
 
   cv::Mat birdview_mat_8UC3(_birdview_width, _birdview_height, CV_8UC3, cv::Scalar::all(0));
-	for (auto centroid:in_centroids.points)
-	{
-		cv::Point ipt(coodinateTransformationFromPclToMat<geometry_msgs::Point>(centroid));
-		cv::circle(birdview_mat_8UC3, ipt, 30, Scalar(255, 255, 255), CV_FILLED, CV_AA);
-	}
+  for (auto centroid : in_centroids.points)
+  {
+    cv::Point ipt(coodinateTransformationFromPclToMat<geometry_msgs::Point>(centroid));
+    cv::circle(birdview_mat_8UC3, ipt, 30, Scalar(255, 255, 255), CV_FILLED, CV_AA);
+  }
   _birdview_buffer_8UC3[_frame_count] = birdview_mat_8UC3;
 }
 
@@ -380,95 +395,96 @@ void visualizeFitting(autoware_msgs::Centroids &in_centroids, int n)
   // cv::cvtColor(_filtered_mat_8UC1, temp_mat, COLOR_GRAY2BGR);
   // cv::bitwise_or(_visual_linefitting_mat_8UC3, temp_mat, _visual_linefitting_mat_8UC3);
 
-    // cv::Mat temp_mat;
-    // cv::cvtColor(_filtered_mat_8UC1, temp_mat, COLOR_GRAY2BGR);
-    // cv::bitwise_or(_visual_linefitting_mat_8UC3, temp_mat, _visual_linefitting_mat_8UC3);
-    // if (!_coeffient_linefitting_mat_64F.empty())
-    // {
-    //   _filtered_mat_8UC1.copyTo(_visual_linefitting_mat_8UC3);
-    //   for (int i = 0; i < num_y_polyline; ++i)
-    //   { 
-    //     cv::Point2d ipt;
-    //     ipt.y = i;
-    //     float x = 0;
-    //     for (int j = 0; j < n + 1; ++j)
-    //     {
-    //       x += _coeffient_linefitting_mat_64F.at<double>(j, 0)*pow(i,j);
-    //     }
-    //     ipt.x = x;
-    //     circle(_visual_linefitting_mat_8UC3, ipt, 1, Scalar(255), CV_FILLED, CV_AA);
-    //   }
-    // }
-  cv::Mat resized_mat; 
-  cv::resize(_visual_linefitting_mat_8UC3, resized_mat, cv::Size(_visual_linefitting_mat_8UC3.cols * 0.5,_visual_linefitting_mat_8UC3.rows * 0.5));
+  // cv::Mat temp_mat;
+  // cv::cvtColor(_filtered_mat_8UC1, temp_mat, COLOR_GRAY2BGR);
+  // cv::bitwise_or(_visual_linefitting_mat_8UC3, temp_mat, _visual_linefitting_mat_8UC3);
+  // if (!_coeffient_linefitting_mat_64F.empty())
+  // {
+  //   _filtered_mat_8UC1.copyTo(_visual_linefitting_mat_8UC3);
+  //   for (int i = 0; i < num_y_polyline; ++i)
+  //   {
+  //     cv::Point2d ipt;
+  //     ipt.y = i;
+  //     float x = 0;
+  //     for (int j = 0; j < n + 1; ++j)
+  //     {
+  //       x += _coeffient_linefitting_mat_64F.at<double>(j, 0)*pow(i,j);
+  //     }
+  //     ipt.x = x;
+  //     circle(_visual_linefitting_mat_8UC3, ipt, 1, Scalar(255), CV_FILLED, CV_AA);
+  //   }
+  // }
+  cv::Mat resized_mat;
+  cv::resize(_visual_linefitting_mat_8UC3, resized_mat, cv::Size(_visual_linefitting_mat_8UC3.cols * 0.5, _visual_linefitting_mat_8UC3.rows * 0.5));
   cv::imshow("origin", _birdview_buffer_8UC3[_frame_count]);
   cv::imshow("_filtered_mat_8UC1", _filtered_mat_8UC1);
   cv::imshow("_visual_linefitting_mat_8UC3", resized_mat);
   cv::imshow("_track_mat_8UC1", _track_mat_8UC1);
+  cv::imshow("_filteredAndBlurred_mat_8UC1", _filteredAndBlurred_mat_8UC1);
 }
 
 void outlierRemoval(const pcl::PointCloud<pcl::PointXYZ>::Ptr in_cloud_ptr,
                     pcl::PointCloud<pcl::PointXYZ>::Ptr out_cloud_ptr)
 {
-    pcl::RadiusOutlierRemoval<pcl::PointXYZ> rorfilter (false); // Initializing with true will allow us to extract the removed indices
-    rorfilter.setInputCloud (in_cloud_ptr);
-    ros::param::get("/lidar_euclidean_cluster_detect/radius_outlier_removal", _radius_outlier_removal);
-    ros::param::get("/lidar_euclidean_cluster_detect/neighbours_outlier_removal", _neighbours_outlier_removal);
-    rorfilter.setRadiusSearch (_radius_outlier_removal);
-    rorfilter.setMinNeighborsInRadius (_neighbours_outlier_removal);
-    rorfilter.setNegative (true);
-    rorfilter.filter (*out_cloud_ptr);
-    // The resulting cloud_out contains all points of cloud_in that have 4 or less neighbors within the 0.1 search radius
-    //indices_rem = rorfilter.getRemovedIndices ();
-    // The indices_rem array indexes all points of cloud_in that have 5 or more neighbors within the 0.1 search radius
+  pcl::RadiusOutlierRemoval<pcl::PointXYZ> rorfilter(false); // Initializing with true will allow us to extract the removed indices
+  rorfilter.setInputCloud(in_cloud_ptr);
+  ros::param::get("/lidar_euclidean_cluster_detect/radius_outlier_removal", _radius_outlier_removal);
+  ros::param::get("/lidar_euclidean_cluster_detect/neighbours_outlier_removal", _neighbours_outlier_removal);
+  rorfilter.setRadiusSearch(_radius_outlier_removal);
+  rorfilter.setMinNeighborsInRadius(_neighbours_outlier_removal);
+  rorfilter.setNegative(true);
+  rorfilter.filter(*out_cloud_ptr);
+  // The resulting cloud_out contains all points of cloud_in that have 4 or less neighbors within the 0.1 search radius
+  //indices_rem = rorfilter.getRemovedIndices ();
+  // The indices_rem array indexes all points of cloud_in that have 5 or more neighbors within the 0.1 search radius
 }
 
 void intensityFilter(const pcl::PointCloud<pcl::PointXYZI>::Ptr in_cloud_ptr,
-                    pcl::PointCloud<pcl::PointXYZ>::Ptr out_cloud_ptr)
+                     pcl::PointCloud<pcl::PointXYZ>::Ptr out_cloud_ptr)
 {
   int intensity_threshold = (_pcl_header.frame_id == "velodyne") ? 50 : 300;
   for (unsigned int i = 0; i < in_cloud_ptr->points.size(); i++)
   {
-      if (in_cloud_ptr->points[i].intensity > intensity_threshold)
-      {   
-          pcl::PointXYZ current_point;
-          current_point.x = in_cloud_ptr->points[i].x;
-          current_point.y = in_cloud_ptr->points[i].y;
-          current_point.z = in_cloud_ptr->points[i].z;
-          out_cloud_ptr->points.push_back(current_point);
-      }
-  }    
+    if (in_cloud_ptr->points[i].intensity > intensity_threshold)
+    {
+      pcl::PointXYZ current_point;
+      current_point.x = in_cloud_ptr->points[i].x;
+      current_point.y = in_cloud_ptr->points[i].y;
+      current_point.z = in_cloud_ptr->points[i].z;
+      out_cloud_ptr->points.push_back(current_point);
+    }
+  }
 }
 
 //filter those centroids which last for short frames (and are not stable)
-void findAndGetFilteredContours(std::vector<std::vector<cv::Point>>& contours_filtered)
+void findAndGetFilteredContours(std::vector<std::vector<cv::Point>> &contours_filtered)
 {
   std::vector<std::vector<cv::Point>> contours;
   std::vector<std::vector<cv::Point>> centroids_filtered_second;
-  std::vector<cv::Vec4i> hierarchy; 
+  std::vector<cv::Vec4i> hierarchy;
   std::vector<cv::Point> centroids_filtered;
-  std::vector<cv::Point> centroids_left_lane; 
-  std::vector<cv::Point> centroids_right_lane; 
+  std::vector<cv::Point> centroids_left_lane;
+  std::vector<cv::Point> centroids_right_lane;
 
   cv::findContours(_track_mat_8UC1, contours, hierarchy, CV_RETR_TREE, CV_CHAIN_APPROX_SIMPLE, Point(0, 0));
-  _filtered_mat_8UC1 = _filtered_mat_8UC1&(cv::Scalar(0));
+  _filtered_mat_8UC1 = _filtered_mat_8UC1 & (cv::Scalar(0));
 
-  for(int i = 0; i< contours.size(); i++)
+  for (int i = 0; i < contours.size(); i++)
   {
     if (contourArea(contours[i]) >= 9000.0)
-    { 
-      cv::drawContours(_filtered_mat_8UC1, contours, i, cv::Scalar(255), 2, 8);   
+    {
+      // cv::drawContours(_filtered_mat_8UC1, contours, i, cv::Scalar(255), 2, 8);
       contours_filtered.push_back(contours[i]);
     }
   }
 }
 
-Matrix<double> dataAssociation(int num_centroids_last_frame, int num_centroids_this_frame, 
-std::vector<cv::Point>& centroids_last_frame, std::vector<cv::Point>& centroids_this_frame)
+Matrix<double> dataAssociation(int num_centroids_last_frame, int num_centroids_this_frame,
+                               std::vector<cv::Point> &centroids_last_frame, std::vector<cv::Point> &centroids_this_frame)
 {
   Matrix<double> dist_Mat(num_centroids_last_frame, num_centroids_this_frame);
-  for (int row = 0 ; row < num_centroids_last_frame ; row++)
-    for (int col = 0 ; col < num_centroids_this_frame ; col++) 
+  for (int row = 0; row < num_centroids_last_frame; row++)
+    for (int col = 0; col < num_centroids_this_frame; col++)
     {
       dist_Mat(row, col) = euclidean_distance(centroids_last_frame[row], centroids_this_frame[col]);
     }
@@ -476,7 +492,7 @@ std::vector<cv::Point>& centroids_last_frame, std::vector<cv::Point>& centroids_
   matcher.solve(dist_Mat);
   // for (int row = 0 ; row < num_centroids_last_frame ; row++)
   // {
-  //   for (int col = 0 ; col < num_centroids_this_frame ; col++) 
+  //   for (int col = 0 ; col < num_centroids_this_frame ; col++)
   //   {
   //     std::cout.width(2);
   //     std::cout << dist_Mat(row, col) << ",";
@@ -486,7 +502,7 @@ std::vector<cv::Point>& centroids_last_frame, std::vector<cv::Point>& centroids_
   return dist_Mat;
 }
 
-cv::Point getDisplacementVector(cv::Point& p1,cv::Point& p2)
+cv::Point getDisplacementVector(cv::Point &p1, cv::Point &p2)
 {
   cv::Point vec_displacement;
   vec_displacement.x = p2.x - p1.x;
@@ -494,14 +510,14 @@ cv::Point getDisplacementVector(cv::Point& p1,cv::Point& p2)
   return vec_displacement;
 }
 
-cv::Point calculateAveragePoint(std::vector<cv::Point>& in_points)
+cv::Point calculateAveragePoint(std::vector<cv::Point> &in_points)
 {
   float sum_x = 0;
   float sum_y = 0;
   int in_points_size = in_points.size();
   cv::Point average_point;
 
-  for (auto point:in_points)
+  for (auto point : in_points)
   {
     sum_x += point.x;
     sum_y += point.y;
@@ -513,12 +529,12 @@ cv::Point calculateAveragePoint(std::vector<cv::Point>& in_points)
   return average_point;
 }
 
-void predictTrajectory(cv::Point* velocity_vectors, cv::Point* predicted_trajectory, const unsigned int velocity_vectors_buffer_size)
+void predictTrajectory(cv::Point *velocity_vectors, cv::Point *predicted_trajectory, const unsigned int velocity_vectors_buffer_size)
 {
   tk::spline s;
   std::vector<double> control_points_x(velocity_vectors_buffer_size + 1), control_points_y(velocity_vectors_buffer_size + 1);
   control_points_y[velocity_vectors_buffer_size] = 0;
-  control_points_x[velocity_vectors_buffer_size] = 0; 
+  control_points_x[velocity_vectors_buffer_size] = 0;
   cv::Point past_trajectory_offset;
 
   for (int i = 1; i < (velocity_vectors_buffer_size + 1); i++)
@@ -537,7 +553,7 @@ void predictTrajectory(cv::Point* velocity_vectors, cv::Point* predicted_traject
   }
 
   s.set_boundary(tk::spline::second_deriv, 0.0,
-                  tk::spline::first_deriv, -2.0, false);
+                 tk::spline::first_deriv, -2.0, false);
   s.set_points(control_points_y, control_points_x);
 
   for (int y = control_points_y[velocity_vectors_buffer_size]; y > control_points_y[0]; y--)
@@ -550,7 +566,7 @@ void predictTrajectory(cv::Point* velocity_vectors, cv::Point* predicted_traject
   {
     cv::Point spline_point(int(s(y)), y);
     cv::circle(_visual_linefitting_mat_8UC3, spline_point, 1, Scalar(30, 255, 30), 1, CV_AA);
-  }  
+  }
   // for(int i=-50; i<250; i++) {
   //   double x=0.01*i;
   //   printf("%f %f %f %f %f\n", x, s(x),
@@ -561,14 +577,15 @@ void predictTrajectory(cv::Point* velocity_vectors, cv::Point* predicted_traject
   // }
 }
 
-unsigned int votingFindVelocityVector(const std::vector<cv::Point>& in_vecs)
+unsigned int votingFindVelocityVector(const std::vector<cv::Point> &in_vecs)
 {
   std::vector<unsigned int> scores(in_vecs.size());
-  for(std::vector<cv::Point>::size_type i = 0; i != in_vecs.size(); i++)
+  for (std::vector<cv::Point>::size_type i = 0; i != in_vecs.size(); i++)
   {
-    for(std::vector<cv::Point>::size_type j = 0; j != in_vecs.size(); j++)
+    for (std::vector<cv::Point>::size_type j = 0; j != in_vecs.size(); j++)
     {
-      if (angleBetween(in_vecs[i], in_vecs[j]) <= (CV_PI / 36)); //if two vectors have angle less than 5 degrees
+      if (angleBetween(in_vecs[i], in_vecs[j]) <= (CV_PI / 36))
+        ; //if two vectors have angle less than 5 degrees
       {
         scores[i]++;
       }
@@ -577,14 +594,17 @@ unsigned int votingFindVelocityVector(const std::vector<cv::Point>& in_vecs)
   return std::distance(scores.begin(), std::max_element(scores.begin(), scores.end()));
 }
 
-void seperateAndFittingLanes(int num_centroids_last_frame, int num_centroids_this_frame, 
-std::vector<cv::Point>& centroids_filtered_last_frame, std::vector<cv::Point>& centroids_filtered_this_frame, 
-Matrix<double>& association_Mat)
+void seperateAndFittingLanes(int num_centroids_last_frame, int num_centroids_this_frame,
+                             std::vector<cv::Point> &centroids_filtered_last_frame, std::vector<cv::Point> &centroids_filtered_this_frame,
+                             Matrix<double> &association_Mat)
 {
   static float control_points[_img_buffer_size];
   static cv::Point vec_average_last;
   static bool first_vec_average_flag = true;
-  _visual_linefitting_mat_8UC3 = _visual_linefitting_mat_8UC3&(cv::Scalar(0));
+  static bool first_assignment_flag = true;
+  static std::vector<bool> left_right_flag_last_frame(num_centroids_last_frame); //false-left true-right
+  static std::vector<bool> left_right_flag_this_frame(num_centroids_this_frame);
+  _visual_linefitting_mat_8UC3 = _visual_linefitting_mat_8UC3 & (cv::Scalar(0));
   std::vector<cv::Point> vecs_displacement;
   std::vector<cv::Point> points_left;
   std::vector<cv::Point> points_left_last;
@@ -600,28 +620,45 @@ Matrix<double>& association_Mat)
   static cv::Point velocity_vectors_buffer[velocity_vectors_buffer_size];
   cv::Point predicted_trajectory[velocity_vectors_buffer_size];
 
-  for (int row = 0 ; row < num_centroids_last_frame ; row++)
+  //assign to left or right
+  if (first_assignment_flag)
   {
-    for (int col = 0 ; col < num_centroids_this_frame ; col++) 
+    cv::GaussianBlur(_filtered_mat_8UC1, _filteredAndBlurred_mat_8UC1, cv::Size(51, 51), 3, 3);
+  }
+  else
+  {
+    for (int row = 0; row < num_centroids_last_frame; row++)
     {
-      if (association_Mat(row, col) == 0)
+      for (int col = 0; col < num_centroids_this_frame; col++)
       {
-        if (euclidean_distance(centroids_filtered_last_frame[row], centroids_filtered_this_frame[col]) < 100)
+        if (association_Mat(row, col) == 0)
         {
-          cv::line(_visual_linefitting_mat_8UC3, centroids_filtered_last_frame[row], centroids_filtered_this_frame[col], cv::Scalar(0, 0, 255));
-          vecs_displacement.push_back(getDisplacementVector(centroids_filtered_this_frame[col], centroids_filtered_last_frame[row]));
+          if (euclidean_distance(centroids_filtered_last_frame[row], centroids_filtered_this_frame[col]) < 100)
+          {
+            if (!left_right_flag_last_frame[row])
+            {
+              left_right_flag_this_frame[col] = false;
+            }
+            else
+            {
+              left_right_flag_this_frame[col] = true;
+            }
+            cv::line(_visual_linefitting_mat_8UC3, centroids_filtered_last_frame[row], centroids_filtered_this_frame[col], cv::Scalar(0, 0, 255));
+            vecs_displacement.push_back(getDisplacementVector(centroids_filtered_this_frame[col], centroids_filtered_last_frame[row]));
+          }
         }
       }
     }
   }
-
-  if (!vecs_displacement.empty())//sometimes vecs_displacement is empty(no matching)
+  first_assignment_flag = false;
+  //calculate vehicle velocity
+  if (!vecs_displacement.empty()) //sometimes vecs_displacement is empty(no matching)
   {
     if (first_vec_average_flag) //what if at the first frame we have wrongly matched?
     {
       // vec_average_last = calculateAveragePoint(vecs_displacement); //average
       vec_average = vecs_displacement[votingFindVelocityVector(vecs_displacement)]; //voting
-      vec_average_last = vec_average; 
+      vec_average_last = vec_average;
       first_vec_average_flag = false;
     }
     else
@@ -649,71 +686,68 @@ Matrix<double>& association_Mat)
     {
       first_velocity_vectors_frame_batch = false;
       velocity_vectors_frame_count = 0;
-    }    
+    }
 
     vec_sensor_orientation.x = 1000 * vec_average.x + point_sensor_position.x;
     vec_sensor_orientation.y = 1000 * vec_average.y + point_sensor_position.y;
-    for (auto centroid:centroids_filtered_this_frame)
-    {
-      if ((centroid.x * vec_average.y - vec_average.x * centroid.y + vec_average.x * point_sensor_position.y - point_sensor_position.x * vec_average.y) > 0)
-      {
-        points_left.push_back(centroid);
-        cv::circle(_visual_linefitting_mat_8UC3, centroid, 15, Scalar(0, 255, 0), 2, CV_AA);
-      }
-      else
-      {
-        points_right.push_back(centroid);
-        cv::circle(_visual_linefitting_mat_8UC3, centroid, 15, Scalar(255, 0, 0), 2, CV_AA);
-      }
-    }
-    
-    for (auto centroid:centroids_filtered_last_frame)
-    {
-      if ((centroid.x * vec_average.y - vec_average.x * centroid.y + vec_average.x * point_sensor_position.y - point_sensor_position.x * vec_average.y) > 0)
-      {
-        points_left_last.push_back(centroid);
-        cv::circle(_visual_linefitting_mat_8UC3, centroid, 15, Scalar(0, 100, 0), 2, CV_AA);
-      }
-      else
-      {
-        points_right_last.push_back(centroid);
-        cv::circle(_visual_linefitting_mat_8UC3, centroid, 15, Scalar(100, 0, 0), 2, CV_AA);
-      }
-    }
+    // for (auto centroid : centroids_filtered_this_frame)
+    // {
+    //   if ((centroid.x * vec_average.y - vec_average.x * centroid.y + vec_average.x * point_sensor_position.y - point_sensor_position.x * vec_average.y) > 0)
+    //   {
+    //     points_left.push_back(centroid);
+    //     cv::circle(_visual_linefitting_mat_8UC3, centroid, 15, Scalar(0, 255, 0), 2, CV_AA);
+    //   }
+    //   else
+    //   {
+    //     points_right.push_back(centroid);
+    //     cv::circle(_visual_linefitting_mat_8UC3, centroid, 15, Scalar(255, 0, 0), 2, CV_AA);
+    //   }
+    // }
 
-    if (!points_left.empty())
-    {
-      sort(points_left.begin(), points_left.end(), 
-        [](const Point & a, const Point & b) -> bool
-      { 
-        return a.y > b.y; 
-      });   //descending order
-      for(std::vector<Point>::iterator it = points_left.begin(); it != points_left.end()-1; ++it)
-      {
-        cv::line(_visual_linefitting_mat_8UC3, *it, *(next(it)), cv::Scalar(0, 255, 0));
-      }
-    }
+    // for (auto centroid : centroids_filtered_last_frame)
+    // {
+    //   if ((centroid.x * vec_average.y - vec_average.x * centroid.y + vec_average.x * point_sensor_position.y - point_sensor_position.x * vec_average.y) > 0)
+    //   {
+    //     points_left_last.push_back(centroid);
+    //     cv::circle(_visual_linefitting_mat_8UC3, centroid, 15, Scalar(0, 100, 0), 2, CV_AA);
+    //   }
+    //   else
+    //   {
+    //     points_right_last.push_back(centroid);
+    //     cv::circle(_visual_linefitting_mat_8UC3, centroid, 15, Scalar(100, 0, 0), 2, CV_AA);
+    //   }
+    // }
 
-    if (!points_right.empty())
-    {
-      sort(points_right.begin(), points_right.end(), 
-        [](const Point & a, const Point & b) -> bool
-      { 
-          return a.y > b.y; 
-      });   //descending order
-      for(std::vector<Point>::iterator it_right = points_right.begin(); it_right != points_right.end()-1; ++it_right)
-      {
-        cv::line(_visual_linefitting_mat_8UC3, *it_right, *(next(it_right)), cv::Scalar(255, 0, 0));
-      }
-    }
+    // if (!points_left.empty())
+    // {
+    //   sort(points_left.begin(), points_left.end(),
+    //        [](const Point &a, const Point &b) -> bool {
+    //          return a.y > b.y;
+    //        }); //descending order
+    //   for (std::vector<Point>::iterator it = points_left.begin(); it != points_left.end() - 1; ++it)
+    //   {
+    //     cv::line(_visual_linefitting_mat_8UC3, *it, *(next(it)), cv::Scalar(0, 255, 0));
+    //   }
+    // }
 
+    // if (!points_right.empty())
+    // {
+    //   sort(points_right.begin(), points_right.end(),
+    //        [](const Point &a, const Point &b) -> bool {
+    //          return a.y > b.y;
+    //        }); //descending order
+    //   for (std::vector<Point>::iterator it_right = points_right.begin(); it_right != points_right.end() - 1; ++it_right)
+    //   {
+    //     cv::line(_visual_linefitting_mat_8UC3, *it_right, *(next(it_right)), cv::Scalar(255, 0, 0));
+    //   }
+    // }
     // lineIntersection();
     cv::line(_visual_linefitting_mat_8UC3, point_sensor_position, vec_sensor_orientation, cv::Scalar(255, 255, 255));
-    char path [1000];
-    static int count = 0;
-    sprintf (path, "/home/autoware/shared_dir/debugfolder/%d.jpg", count);
-    cv::imwrite(path, _visual_linefitting_mat_8UC3);
-    count++;
+    // char path[1000];
+    // static int count = 0;
+    // sprintf(path, "/home/autoware/shared_dir/debugfolder/%d.jpg", count);
+    // cv::imwrite(path, _visual_linefitting_mat_8UC3);
+    // count++;
   }
 }
 
@@ -745,12 +779,12 @@ void findLane(autoware_msgs::Centroids &in_centroids, int n)
     findAndGetFilteredContours(contours_filtered_this_frame);
     centroids_filtered_this_frame.clear();
     filterCentroids(in_centroids, contours_filtered_this_frame, centroids_filtered_this_frame);
-    num_centroids_filtered_this_frame = centroids_filtered_this_frame.size();    
+    num_centroids_filtered_this_frame = centroids_filtered_this_frame.size();
     // _visual_clear_flag = false;
 
     if (state == 0)
     {
-      if (num_centroids_filtered_this_frame > 1 && num_centroids_filtered_last_frame > 1)      
+      if (num_centroids_filtered_this_frame > 1 && num_centroids_filtered_last_frame > 1)
       {
         state++;
       }
@@ -761,10 +795,10 @@ void findLane(autoware_msgs::Centroids &in_centroids, int n)
       {
         state--;
       }
-      else if (num_centroids_filtered_this_frame > 0 && num_centroids_filtered_last_frame > 0)      
+      else if (num_centroids_filtered_this_frame > 0 && num_centroids_filtered_last_frame > 0)
       {
         state++;
-      }      
+      }
     }
     else if (state == 2)
     {
@@ -772,11 +806,11 @@ void findLane(autoware_msgs::Centroids &in_centroids, int n)
       {
         ROS_INFO("yes");
         association_Mat = dataAssociation(num_centroids_filtered_last_frame, num_centroids_filtered_this_frame,
-        centroids_filtered_last_frame, centroids_filtered_this_frame);
-        seperateAndFittingLanes(num_centroids_filtered_last_frame, num_centroids_filtered_this_frame, 
-        centroids_filtered_last_frame, centroids_filtered_this_frame, association_Mat);
-      }   
-      else if (num_centroids_filtered_this_frame == 0 || num_centroids_filtered_last_frame == 0)   
+                                          centroids_filtered_last_frame, centroids_filtered_this_frame);
+        seperateAndFittingLanes(num_centroids_filtered_last_frame, num_centroids_filtered_this_frame,
+                                centroids_filtered_last_frame, centroids_filtered_this_frame, association_Mat);
+      }
+      else if (num_centroids_filtered_this_frame == 0 || num_centroids_filtered_last_frame == 0)
       {
         state++;
       }
@@ -787,10 +821,10 @@ void findLane(autoware_msgs::Centroids &in_centroids, int n)
       {
         state--;
       }
-      else if (num_centroids_filtered_this_frame == 0 || num_centroids_filtered_last_frame == 0)   
+      else if (num_centroids_filtered_this_frame == 0 || num_centroids_filtered_last_frame == 0)
       {
         state = 0;
-      }     
+      }
     }
     ROS_INFO("%d", state);
     centroids_filtered_last_frame = centroids_filtered_this_frame;
@@ -857,10 +891,10 @@ void publishCloudClusters(const ros::Publisher *in_publisher, const autoware_msg
         cluster_transformed.dimensions = i->dimensions;
         cluster_transformed.eigen_values = i->eigen_values;
         cluster_transformed.eigen_vectors = i->eigen_vectors;
-        
+
         cluster_transformed.convex_hull = i->convex_hull;
         cluster_transformed.bounding_box.pose.position = i->bounding_box.pose.position;
-        if(_pose_estimation)
+        if (_pose_estimation)
         {
           cluster_transformed.bounding_box.pose.orientation = i->bounding_box.pose.orientation;
         }
@@ -876,9 +910,10 @@ void publishCloudClusters(const ros::Publisher *in_publisher, const autoware_msg
       }
     }
     in_publisher->publish(clusters_transformed);
-    
+
     (clusters_transformed);
-  } else
+  }
+  else
   {
     in_publisher->publish(in_clusters);
     publishDetectedObjects(in_clusters);
@@ -911,7 +946,8 @@ void publishCentroids(const ros::Publisher *in_publisher, const autoware_msgs::C
       }
     }
     in_publisher->publish(centroids_transformed);
-  } else
+  }
+  else
   {
     in_publisher->publish(in_centroids);
   }
@@ -955,7 +991,7 @@ void keepLanePoints(const pcl::PointCloud<pcl::PointXYZ>::Ptr in_cloud_ptr,
   pcl::ExtractIndices<pcl::PointXYZ> extract;
   extract.setInputCloud(in_cloud_ptr);
   extract.setIndices(far_indices);
-  extract.setNegative(true);  // true removes the indices, false leaves only the indices
+  extract.setNegative(true); // true removes the indices, false leaves only the indices
   extract.filter(*out_cloud_ptr);
 }
 
@@ -977,9 +1013,9 @@ std::vector<ClusterPtr> clusterAndColorGpu(const pcl::PointCloud<pcl::PointXYZ>:
 
   float *tmp_x, *tmp_y, *tmp_z;
 
-  tmp_x = (float *) malloc(sizeof(float) * size);
-  tmp_y = (float *) malloc(sizeof(float) * size);
-  tmp_z = (float *) malloc(sizeof(float) * size);
+  tmp_x = (float *)malloc(sizeof(float) * size);
+  tmp_y = (float *)malloc(sizeof(float) * size);
+  tmp_z = (float *)malloc(sizeof(float) * size);
 
   for (int i = 0; i < size; i++)
   {
@@ -1001,9 +1037,9 @@ std::vector<ClusterPtr> clusterAndColorGpu(const pcl::PointCloud<pcl::PointXYZ>:
   for (auto it = cluster_indices.begin(); it != cluster_indices.end(); it++)
   {
     ClusterPtr cluster(new Cluster());
-    cluster->SetCloud(in_cloud_ptr, it->points_in_cluster, _pcl_header, k, (int) _colors[k].val[0],
-                      (int) _colors[k].val[1], (int) _colors[k].val[2], "", _pose_estimation);
-    ros::param::get("/lidar_euclidean_cluster_detect/min_cluster_height",_min_cluster_height);
+    cluster->SetCloud(in_cloud_ptr, it->points_in_cluster, _pcl_header, k, (int)_colors[k].val[0],
+                      (int)_colors[k].val[1], (int)_colors[k].val[2], "", _pose_estimation);
+    ros::param::get("/lidar_euclidean_cluster_detect/min_cluster_height", _min_cluster_height);
     if (!_simulation)
     {
       if (cluster->GetHeight() >= _min_cluster_height && cluster->GetWidth() <= 1 && cluster->GetLength() <= 0.8)
@@ -1048,7 +1084,7 @@ std::vector<ClusterPtr> clusterAndColor(const pcl::PointCloud<pcl::PointXYZ>::Pt
 
   // perform clustering on 2d cloud
   pcl::EuclideanClusterExtraction<pcl::PointXYZ> ec;
-  ec.setClusterTolerance(in_max_cluster_distance);  //
+  ec.setClusterTolerance(in_max_cluster_distance); //
   ec.setMinClusterSize(_cluster_size_min);
   ec.setMaxClusterSize(_cluster_size_max);
   ec.setSearchMethod(tree);
@@ -1068,9 +1104,9 @@ std::vector<ClusterPtr> clusterAndColor(const pcl::PointCloud<pcl::PointXYZ>::Pt
   for (auto it = cluster_indices.begin(); it != cluster_indices.end(); ++it)
   {
     ClusterPtr cluster(new Cluster());
-    cluster->SetCloud(in_cloud_ptr, it->indices, _pcl_header, k, (int) _colors[k].val[0],
-                      (int) _colors[k].val[1],
-                      (int) _colors[k].val[2], "", _pose_estimation);
+    cluster->SetCloud(in_cloud_ptr, it->indices, _pcl_header, k, (int)_colors[k].val[0],
+                      (int)_colors[k].val[1],
+                      (int)_colors[k].val[2], "", _pose_estimation);
     clusters.push_back(cluster);
 
     k++;
@@ -1125,8 +1161,8 @@ void mergeClusters(const std::vector<ClusterPtr> &in_clusters, std::vector<Clust
   {
     pcl::copyPointCloud(sum_cloud, mono_cloud);
     merged_cluster->SetCloud(mono_cloud.makeShared(), indices, _pcl_header, current_index,
-                             (int) _colors[current_index].val[0], (int) _colors[current_index].val[1],
-                             (int) _colors[current_index].val[2], "", _pose_estimation);
+                             (int)_colors[current_index].val[0], (int)_colors[current_index].val[1],
+                             (int)_colors[current_index].val[2], "", _pose_estimation);
     out_clusters.push_back(merged_cluster);
   }
 }
@@ -1193,23 +1229,25 @@ void segmentByDistance(const pcl::PointCloud<pcl::PointXYZ>::Ptr in_cloud_ptr,
       // }
       cloud_ptr->points.push_back(current_point);
     }
-    
+
 #ifdef GPU_CLUSTERING
     if (_use_gpu)
     {
       all_clusters = clusterAndColorGpu(cloud_ptr, out_cloud_ptr, in_out_centroids,
                                         _clustering_distance);
-    } else
+    }
+    else
     {
       all_clusters =
-        clusterAndColor(cloud_ptr, out_cloud_ptr, in_out_centroids, _clustering_distance);
+          clusterAndColor(cloud_ptr, out_cloud_ptr, in_out_centroids, _clustering_distance);
     }
 #else
     all_clusters =
         clusterAndColor(cloud_ptr, out_cloud_ptr, in_out_centroids, _clustering_distance);
 #endif
-  } else
-  { 
+  }
+  else
+  {
     std::vector<pcl::PointCloud<pcl::PointXYZ>::Ptr> cloud_segments_array(5);
     for (unsigned int i = 0; i < cloud_segments_array.size(); i++)
     {
@@ -1233,16 +1271,16 @@ void segmentByDistance(const pcl::PointCloud<pcl::PointXYZ>::Ptr in_cloud_ptr,
       else if (origin_distance < _clustering_ranges[1])
       {
         cloud_segments_array[1]->points.push_back(current_point);
-
-      }else if (origin_distance < _clustering_ranges[2])
+      }
+      else if (origin_distance < _clustering_ranges[2])
       {
         cloud_segments_array[2]->points.push_back(current_point);
-
-      }else if (origin_distance < _clustering_ranges[3])
+      }
+      else if (origin_distance < _clustering_ranges[3])
       {
         cloud_segments_array[3]->points.push_back(current_point);
-
-      }else
+      }
+      else
       {
         cloud_segments_array[4]->points.push_back(current_point);
       }
@@ -1257,7 +1295,8 @@ void segmentByDistance(const pcl::PointCloud<pcl::PointXYZ>::Ptr in_cloud_ptr,
       {
         local_clusters = clusterAndColorGpu(cloud_segments_array[i], out_cloud_ptr,
                                             in_out_centroids, _clustering_distances[i]);
-      } else
+      }
+      else
       {
         local_clusters = clusterAndColor(cloud_segments_array[i], out_cloud_ptr,
                                          in_out_centroids, _clustering_distances[i]);
@@ -1269,7 +1308,7 @@ void segmentByDistance(const pcl::PointCloud<pcl::PointXYZ>::Ptr in_cloud_ptr,
       all_clusters.insert(all_clusters.end(), local_clusters.begin(), local_clusters.end());
     }
   }
-  
+
   // Clusters can be merged or checked in here
   //....
   // check for mergable clusters
@@ -1286,53 +1325,53 @@ void segmentByDistance(const pcl::PointCloud<pcl::PointXYZ>::Ptr in_cloud_ptr,
   else
     final_clusters = mid_clusters;
 
-    // Get final PointCloud to be published
-    for (unsigned int i = 0; i < final_clusters.size(); i++)
+  // Get final PointCloud to be published
+  for (unsigned int i = 0; i < final_clusters.size(); i++)
+  {
+    *out_cloud_ptr = *out_cloud_ptr + *(final_clusters[i]->GetCloud());
+
+    jsk_recognition_msgs::BoundingBox bounding_box = final_clusters[i]->GetBoundingBox();
+    geometry_msgs::PolygonStamped polygon = final_clusters[i]->GetPolygon();
+    jsk_rviz_plugins::Pictogram pictogram_cluster;
+    pictogram_cluster.header = _pcl_header;
+
+    // PICTO
+    pictogram_cluster.mode = pictogram_cluster.STRING_MODE;
+    pictogram_cluster.pose.position.x = final_clusters[i]->GetMaxPoint().x;
+    pictogram_cluster.pose.position.y = final_clusters[i]->GetMaxPoint().y;
+    pictogram_cluster.pose.position.z = final_clusters[i]->GetMaxPoint().z;
+    tf::Quaternion quat(0.0, -0.7, 0.0, 0.7);
+    tf::quaternionTFToMsg(quat, pictogram_cluster.pose.orientation);
+    pictogram_cluster.size = 4;
+    std_msgs::ColorRGBA color;
+    color.a = 1;
+    color.r = 1;
+    color.g = 1;
+    color.b = 1;
+    pictogram_cluster.color = color;
+    pictogram_cluster.character = std::to_string(i);
+    // PICTO
+
+    // pcl::PointXYZ min_point = final_clusters[i]->GetMinPoint();
+    // pcl::PointXYZ max_point = final_clusters[i]->GetMaxPoint();
+    pcl::PointXYZ center_point = final_clusters[i]->GetCentroid();
+    geometry_msgs::Point centroid;
+    centroid.x = center_point.x;
+    centroid.y = center_point.y;
+    centroid.z = center_point.z;
+    bounding_box.header = _pcl_header;
+    polygon.header = _pcl_header;
+
+    if (final_clusters[i]->IsValid())
     {
-      *out_cloud_ptr = *out_cloud_ptr + *(final_clusters[i]->GetCloud());
 
-      jsk_recognition_msgs::BoundingBox bounding_box = final_clusters[i]->GetBoundingBox();
-      geometry_msgs::PolygonStamped polygon = final_clusters[i]->GetPolygon();
-      jsk_rviz_plugins::Pictogram pictogram_cluster;
-      pictogram_cluster.header = _pcl_header;
+      in_out_centroids.points.push_back(centroid);
 
-      // PICTO
-      pictogram_cluster.mode = pictogram_cluster.STRING_MODE;
-      pictogram_cluster.pose.position.x = final_clusters[i]->GetMaxPoint().x;
-      pictogram_cluster.pose.position.y = final_clusters[i]->GetMaxPoint().y;
-      pictogram_cluster.pose.position.z = final_clusters[i]->GetMaxPoint().z;
-      tf::Quaternion quat(0.0, -0.7, 0.0, 0.7);
-      tf::quaternionTFToMsg(quat, pictogram_cluster.pose.orientation);
-      pictogram_cluster.size = 4;
-      std_msgs::ColorRGBA color;
-      color.a = 1;
-      color.r = 1;
-      color.g = 1;
-      color.b = 1;
-      pictogram_cluster.color = color;
-      pictogram_cluster.character = std::to_string(i);
-      // PICTO
-
-      // pcl::PointXYZ min_point = final_clusters[i]->GetMinPoint();
-      // pcl::PointXYZ max_point = final_clusters[i]->GetMaxPoint();
-      pcl::PointXYZ center_point = final_clusters[i]->GetCentroid();
-      geometry_msgs::Point centroid;
-      centroid.x = center_point.x;
-      centroid.y = center_point.y;
-      centroid.z = center_point.z;
-      bounding_box.header = _pcl_header;
-      polygon.header = _pcl_header;
-
-      if (final_clusters[i]->IsValid())
-      {
-
-        in_out_centroids.points.push_back(centroid);
-
-        autoware_msgs::CloudCluster cloud_cluster;
-        final_clusters[i]->ToROSMessage(_pcl_header, cloud_cluster);
-        in_out_clusters.clusters.push_back(cloud_cluster);
-      }
+      autoware_msgs::CloudCluster cloud_cluster;
+      final_clusters[i]->ToROSMessage(_pcl_header, cloud_cluster);
+      in_out_clusters.clusters.push_back(cloud_cluster);
     }
+  }
 }
 
 void removeFloor(const pcl::PointCloud<pcl::PointXYZ>::Ptr in_cloud_ptr,
@@ -1350,7 +1389,7 @@ void removeFloor(const pcl::PointCloud<pcl::PointXYZ>::Ptr in_cloud_ptr,
   seg.setAxis(Eigen::Vector3f(0, 0, 1));
   // seg.setEpsAngle(pcl::deg2rad(in_floor_max_angle)); //largest angle inside which plane can shake
 
-  seg.setDistanceThreshold(in_max_height);  // floor distance
+  seg.setDistanceThreshold(in_max_height); // floor distance
   seg.setOptimizeCoefficients(true);
   seg.setInputCloud(in_cloud_ptr);
   seg.segment(*inliers, *coefficients);
@@ -1364,10 +1403,10 @@ void removeFloor(const pcl::PointCloud<pcl::PointXYZ>::Ptr in_cloud_ptr,
   pcl::ExtractIndices<pcl::PointXYZ> extract;
   extract.setInputCloud(in_cloud_ptr);
   extract.setIndices(inliers);
-  extract.setNegative(true);  // true removes the indices, false leaves only the indices
+  extract.setNegative(true); // true removes the indices, false leaves only the indices
   extract.filter(*out_nofloor_cloud_ptr);
   // EXTRACT THE FLOOR FROM THE CLOUD
-  extract.setNegative(false);  // true removes the indices, false leaves only the indices
+  extract.setNegative(false); // true removes the indices, false leaves only the indices
   extract.filter(*out_onlyfloor_cloud_ptr);
 }
 
@@ -1376,14 +1415,14 @@ void downsampleCloud(const pcl::PointCloud<pcl::PointXYZ>::Ptr in_cloud_ptr,
 {
   pcl::VoxelGrid<pcl::PointXYZ> sor;
   sor.setInputCloud(in_cloud_ptr);
-  sor.setLeafSize((float) in_leaf_size, (float) in_leaf_size, (float) in_leaf_size);
+  sor.setLeafSize((float)in_leaf_size, (float)in_leaf_size, (float)in_leaf_size);
   sor.filter(*out_cloud_ptr);
 }
 
 void clipCloud(const pcl::PointCloud<pcl::PointXYZ>::Ptr in_cloud_ptr,
                pcl::PointCloud<pcl::PointXYZ>::Ptr out_cloud_ptr, float in_min_height = -1.3, float in_max_height = 0.5)
 {
-  
+
   out_cloud_ptr->points.clear();
   for (unsigned int i = 0; i < in_cloud_ptr->points.size(); i++)
   {
@@ -1404,7 +1443,8 @@ void differenceNormalsSegmentation(const pcl::PointCloud<pcl::PointXYZ>::Ptr in_
   if (in_cloud_ptr->isOrganized())
   {
     tree.reset(new pcl::search::OrganizedNeighbor<pcl::PointXYZ>());
-  } else
+  }
+  else
   {
     tree.reset(new pcl::search::KdTree<pcl::PointXYZ>(false));
   }
@@ -1444,7 +1484,7 @@ void differenceNormalsSegmentation(const pcl::PointCloud<pcl::PointXYZ>::Ptr in_
 
   pcl::ConditionOr<pcl::PointNormal>::Ptr range_cond(new pcl::ConditionOr<pcl::PointNormal>());
   range_cond->addComparison(pcl::FieldComparison<pcl::PointNormal>::ConstPtr(
-    new pcl::FieldComparison<pcl::PointNormal>("curvature", pcl::ComparisonOps::GT, angle_threshold)));
+      new pcl::FieldComparison<pcl::PointNormal>("curvature", pcl::ComparisonOps::GT, angle_threshold)));
   // Build the filter
   pcl::ConditionalRemoval<pcl::PointNormal> cond_removal;
   cond_removal.setCondition(range_cond);
@@ -1472,7 +1512,7 @@ void removePointsUpTo(const pcl::PointCloud<pcl::PointXYZ>::Ptr in_cloud_ptr,
   }
 }
 
-void velodyne_callback(const sensor_msgs::PointCloud2ConstPtr& in_sensor_cloud)
+void velodyne_callback(const sensor_msgs::PointCloud2ConstPtr &in_sensor_cloud)
 {
 
   //_start = std::chrono::system_clock::now();
@@ -1491,11 +1531,9 @@ void velodyne_callback(const sensor_msgs::PointCloud2ConstPtr& in_sensor_cloud)
     pcl::PointCloud<pcl::PointXYZ>::Ptr clipped_cloud_ptr(new pcl::PointCloud<pcl::PointXYZ>);
     pcl::PointCloud<pcl::PointXYZRGB>::Ptr colored_clustered_cloud_ptr(new pcl::PointCloud<pcl::PointXYZRGB>);
 
-
     autoware_msgs::Centroids centroids;
     autoware_msgs::CloudClusterArray cloud_clusters;
 
-    
     _pcl_header = in_sensor_cloud->header;
     _output_frame = _pcl_header.frame_id;
 
@@ -1511,7 +1549,7 @@ void velodyne_callback(const sensor_msgs::PointCloud2ConstPtr& in_sensor_cloud)
       pcl::fromROSMsg(*in_sensor_cloud, *current_sensor_cloud_ptr);
       *intensity_filtered_cloud_ptr = *current_sensor_cloud_ptr;
     }
-    
+
     if (_remove_points_upto > 0.0)
     {
       removePointsUpTo(intensity_filtered_cloud_ptr, removed_points_cloud_ptr, _remove_points_upto); //remove points near
@@ -1526,19 +1564,19 @@ void velodyne_callback(const sensor_msgs::PointCloud2ConstPtr& in_sensor_cloud)
     else
       downsampled_cloud_ptr = removed_points_cloud_ptr;
 
-    outlierRemoval(downsampled_cloud_ptr, outlier_removed_cloud_ptr);    
-    
+    outlierRemoval(downsampled_cloud_ptr, outlier_removed_cloud_ptr);
+
     clipCloud(outlier_removed_cloud_ptr, clipped_cloud_ptr, _clip_min_height, _clip_max_height); //clip according to z axis
 
     if (_keep_lanes)
       keepLanePoints(clipped_cloud_ptr, inlanes_cloud_ptr, _keep_lane_left_distance, _keep_lane_right_distance); //clip according to y axis
     else
       inlanes_cloud_ptr = clipped_cloud_ptr;
-    ros::param::get("/lidar_euclidean_cluster_detect/ransac_height",_ransac_height);
-    ros::param::get("/lidar_euclidean_cluster_detect/ransac_angle",_ransac_angle);
+    ros::param::get("/lidar_euclidean_cluster_detect/ransac_height", _ransac_height);
+    ros::param::get("/lidar_euclidean_cluster_detect/ransac_angle", _ransac_angle);
     if (_remove_ground)
     {
-      removeFloor(inlanes_cloud_ptr, nofloor_cloud_ptr, onlyfloor_cloud_ptr, _ransac_height,_ransac_angle);
+      removeFloor(inlanes_cloud_ptr, nofloor_cloud_ptr, onlyfloor_cloud_ptr, _ransac_height, _ransac_angle);
       publishCloud(&_pub_ground_cloud, onlyfloor_cloud_ptr);
     }
     else
@@ -1553,7 +1591,6 @@ void velodyne_callback(const sensor_msgs::PointCloud2ConstPtr& in_sensor_cloud)
     else
       diffnormals_cloud_ptr = nofloor_cloud_ptr;
 
-    
     segmentByDistance(diffnormals_cloud_ptr, colored_clustered_cloud_ptr, centroids,
                       cloud_clusters);
     publishColorCloud(&_pub_cluster_cloud, colored_clustered_cloud_ptr); //colored_clustered_cloud_ptr and cloud_clusters difference?
@@ -1624,7 +1661,7 @@ int main(int argc, char **argv)
   else
   {
     ROS_INFO("euclidean_cluster > No points node received, defaulting to points_raw, you can use "
-               "_points_node:=YOUR_TOPIC");
+             "_points_node:=YOUR_TOPIC");
     points_topic = "/points_raw";
   }
 
@@ -1637,7 +1674,7 @@ int main(int argc, char **argv)
       ROS_INFO("Euclidean Clustering: Difference of Normals will not be used.");
   }
 
- /* Initialize tuning parameter */
+  /* Initialize tuning parameter */
   private_nh.param("simulation", _simulation, true);
   ROS_INFO("[%s] simulation: %d", __APP_NAME__, _simulation);
   private_nh.param("intensity_filter", _intensity_filter, false);
@@ -1647,7 +1684,7 @@ int main(int argc, char **argv)
   private_nh.param("ransac_height", _ransac_height, 1.0);
   ROS_INFO("[%s] ransac_height: %f", __APP_NAME__, _ransac_height);
   private_nh.param("ransac_angle", _ransac_angle, 20.0);
-  ROS_INFO("[%s] ransac_angle: %f", __APP_NAME__, _ransac_angle);  
+  ROS_INFO("[%s] ransac_angle: %f", __APP_NAME__, _ransac_angle);
   private_nh.param("downsample_cloud", _downsample_cloud, true);
   ROS_INFO("[%s] downsample_cloud: %d", __APP_NAME__, _downsample_cloud);
   private_nh.param("remove_ground", _remove_ground, true);
@@ -1662,7 +1699,7 @@ int main(int argc, char **argv)
   else
   {
     private_nh.param("cluster_size_min", _cluster_size_min, 0);
-    ROS_INFO("[%s] cluster_size_min %d", __APP_NAME__, _cluster_size_min);    
+    ROS_INFO("[%s] cluster_size_min %d", __APP_NAME__, _cluster_size_min);
   }
   private_nh.param("cluster_size_max", _cluster_size_max, 100000);
   ROS_INFO("[%s] cluster_size_max: %d", __APP_NAME__, _cluster_size_max);
@@ -1702,7 +1739,7 @@ int main(int argc, char **argv)
   private_nh.param("clustering_distances", str_distances, std::string("[0.5,1.1,1.6,2.1,2.6]"));
   ROS_INFO("[%s] clustering_distances: %s", __APP_NAME__, str_distances.c_str());
   private_nh.param("clustering_ranges", str_ranges, std::string("[15,30,45,60]"));
-    ROS_INFO("[%s] clustering_ranges: %s", __APP_NAME__, str_ranges.c_str());
+  ROS_INFO("[%s] clustering_ranges: %s", __APP_NAME__, str_ranges.c_str());
 
   if (_use_multiple_thres)
   {

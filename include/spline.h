@@ -319,12 +319,12 @@ void spline::set_points(const std::vector<double>& x,
     m_x = apply_permutation(m_x, p);
     m_y = apply_permutation(m_y, p);
 
-    // for(int i=0; i<n-1; i++) {
-    //     if (m_x[i] == m_x[i+1])
-    //     {
-    //         m_x[i+1] = m_x[i] + 0.1;
-    //     }
-    // }
+    for(int i=0; i<n-1; i++) {
+        if (m_x[i] == m_x[i+1])
+        {
+            m_x[i+1]++;
+        }
+    }
     // TODO: maybe sort x and y, rather than returning an error
 
     for(int i=0; i<n-1; i++) {
