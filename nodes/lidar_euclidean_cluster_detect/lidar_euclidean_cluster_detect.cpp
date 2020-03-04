@@ -272,7 +272,7 @@ cv::Point coodinateTransformationFromPclToMat(T in_point)
   }
   else if (_pcl_header.frame_id == "velodyne")
   {
-    return cv::Point(int(in_point.y*_birdview_scale+_birdview_width/2), int(-in_point.x*_birdview_scale+_birdview_height));
+    return cv::Point(int(-in_point.y*_birdview_scale+_birdview_width/2), int(-in_point.x*_birdview_scale+_birdview_height));
   }
 }
 
@@ -561,6 +561,22 @@ void predictTrajectory(cv::Point* velocity_vectors, cv::Point* predicted_traject
   // }
 }
 
+unsigned int votingFindVelocityVector(const std::vector<cv::Point>& in_vecs)
+{
+  std::vector<unsigned int> scores(in_vecs.size());
+  for(std::vector<cv::Point>::size_type i = 0; i != in_vecs.size(); i++)
+  {
+    for(std::vector<cv::Point>::size_type j = 0; j != in_vecs.size(); j++)
+    {
+      if (angleBetween(in_vecs[i], in_vecs[j]) <= (CV_PI / 36)); //if two vectors have angle less than 5 degrees
+      {
+        scores[i]++;
+      }
+    }
+  }
+  return std::distance(scores.begin(), std::max_element(scores.begin(), scores.end()));
+}
+
 void seperateAndFittingLanes(int num_centroids_last_frame, int num_centroids_this_frame, 
 std::vector<cv::Point>& centroids_filtered_last_frame, std::vector<cv::Point>& centroids_filtered_this_frame, 
 Matrix<double>& association_Mat)
@@ -599,19 +615,21 @@ Matrix<double>& association_Mat)
     }
   }
 
-  if (!vecs_displacement.empty())
+  if (!vecs_displacement.empty())//sometimes vecs_displacement is empty(no matching)
   {
     if (first_vec_average_flag) //what if at the first frame we have wrongly matched?
     {
-      vec_average_last = calculateAveragePoint(vecs_displacement);
-      // vec_average_last = cv::Point(0, -50);
+      // vec_average_last = calculateAveragePoint(vecs_displacement); //average
+      vec_average = vecs_displacement[votingFindVelocityVector(vecs_displacement)]; //voting
+      vec_average_last = vec_average; 
       first_vec_average_flag = false;
     }
     else
     {
-      vec_average = calculateAveragePoint(vecs_displacement); //sometimes vecs_displacement is empty(no matching)
+      // vec_average = calculateAveragePoint(vecs_displacement); //average
+      vec_average = vecs_displacement[votingFindVelocityVector(vecs_displacement)]; //voting
       float angle_varied = angleBetween(vec_average_last, vec_average);
-      if (angle_varied >= (CV_PI / 12)) //15 degrees difference between frames should not be larget than 15 degrees
+      if (angle_varied >= (CV_PI / 4)) //45 degrees difference between frames should not be larget than 15 degrees
       {
         vec_average = vec_average_last;
       }
