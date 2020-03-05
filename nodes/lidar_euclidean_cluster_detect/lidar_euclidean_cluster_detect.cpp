@@ -463,7 +463,7 @@ void findAndGetFilteredContours(std::vector<std::vector<cv::Point>> &contours_fi
   std::vector<std::vector<cv::Point>> centroids_filtered_second;
   std::vector<cv::Vec4i> hierarchy;
   std::vector<cv::Point> centroids_filtered;
-  std::vector<cv::Point> centroids_left_lane;
+  std::vector<cv::Point> centroids_left_idx_lane;
   std::vector<cv::Point> centroids_right_lane;
 
   cv::findContours(_track_mat_8UC1, contours, hierarchy, CV_RETR_TREE, CV_CHAIN_APPROX_SIMPLE, Point(0, 0));
@@ -594,16 +594,95 @@ unsigned int votingFindVelocityVector(const std::vector<cv::Point> &in_vecs)
   return std::distance(scores.begin(), std::max_element(scores.begin(), scores.end()));
 }
 
+void road_trajectory_prediction(std::vector<cv::Point>* centroids_filtered_buffer, const unsigned int centroids_filtered_buffer_size)
+{
+  std::vector<std::vector<cv::Point>> contours;
+  std::vector<cv::Vec4i> hierarchy;
+  // static std::vector<bool> left_right_flag_last_frame(num_centroids_last_frame); //false-left true-right
+  // static std::vector<bool> left_right_flag_this_frame(num_centroids_this_frame);
+
+  _filteredAndBlurred_mat_8UC1 = _filteredAndBlurred_mat_8UC1 & (cv::Scalar(0));
+
+  for (unsigned int i = 0; i < centroids_filtered_buffer_size; i++)
+  {
+    for (std::vector<cv::Point>::size_type j = 0; j != centroids_filtered_buffer[i].size(); j++)
+    {
+      cv::circle(_filteredAndBlurred_mat_8UC1, centroids_filtered_buffer[i][j], 15, Scalar(255), 2, CV_AA);
+    }
+  }
+
+  //road trajectory prediction
+  cv::GaussianBlur(_filteredAndBlurred_mat_8UC1, _filteredAndBlurred_mat_8UC1, cv::Size(201, 201), 10, 50);
+  cv::threshold(_filteredAndBlurred_mat_8UC1, _filteredAndBlurred_mat_8UC1, 0, 255, CV_THRESH_BINARY);
+  cv::findContours(_filteredAndBlurred_mat_8UC1, contours, hierarchy, CV_RETR_TREE, CV_CHAIN_APPROX_SIMPLE, Point(0, 0));
+
+  std::vector<cv::Moments> mu(contours.size());
+  std::vector<cv::Point2f> mc(contours.size());
+
+  for (int i = 0; i < contours.size(); i++)
+  {
+    for( int i = 0; i < contours.size(); i++ )
+    { 
+      mu[i] = moments(contours[i], false); 
+    }
+    ///  Get the mass centers:
+    for(int i = 0; i < contours.size(); i++)
+    { 
+      mc[i] = Point2f(mu[i].m10/mu[i].m00 , mu[i].m01/mu[i].m00);
+    }
+  }
+
+  std::vector<unsigned int> centroids_left_idx;
+  std::vector<unsigned int> centroids_right_idx;
+  for (std::vector<cv::Point>::size_type i = 0; i != mc.size(); i++)
+  {
+    if (mc[i].x < _birdview_width / 2)
+    {
+      centroids_left_idx.push_back(i);
+    }
+    else
+    {
+      centroids_right_idx.push_back(i);
+    }
+  }
+  if (!centroids_left_idx.empty())
+  {
+    unsigned int nearest_index_left = centroids_left_idx[0];
+    for (std::vector<cv::Point>::size_type i = 0; i != centroids_left_idx.size(); i++)
+    {
+      if ((_birdview_width/2 - mc[centroids_left_idx[i]].x) < (_birdview_width/2 - mc[nearest_index_left].x))
+      {
+        nearest_index_left = centroids_left_idx[i];
+      }
+    }
+    cv::circle(_filteredAndBlurred_mat_8UC1, mc[nearest_index_left], 15, Scalar(0), 2, CV_AA);
+  }
+  if (!centroids_right_idx.empty())
+  {
+    unsigned int nearest_index_right = centroids_right_idx[0];
+    for (std::vector<cv::Point>::size_type i = 0; i != centroids_right_idx.size(); i++)
+    {
+      if ((mc[centroids_right_idx[i]].x - _birdview_width/2) < (mc[nearest_index_right].x - _birdview_width/2))
+      {
+        nearest_index_right = centroids_right_idx[i];
+      }
+    }
+    cv::circle(_filteredAndBlurred_mat_8UC1, mc[nearest_index_right], 5, Scalar(0), 2, CV_AA);
+  }
+}
+
 void seperateAndFittingLanes(int num_centroids_last_frame, int num_centroids_this_frame,
                              std::vector<cv::Point> &centroids_filtered_last_frame, std::vector<cv::Point> &centroids_filtered_this_frame,
-                             Matrix<double> &association_Mat)
+                             Matrix<double> &association_Mat, std::vector<cv::Point>* centroids_filtered_buffer, const unsigned int centroids_filtered_buffer_size)
 {
+
   static float control_points[_img_buffer_size];
   static cv::Point vec_average_last;
   static bool first_vec_average_flag = true;
   static bool first_assignment_flag = true;
-  static std::vector<bool> left_right_flag_last_frame(num_centroids_last_frame); //false-left true-right
-  static std::vector<bool> left_right_flag_this_frame(num_centroids_this_frame);
+
+
+
   _visual_linefitting_mat_8UC3 = _visual_linefitting_mat_8UC3 & (cv::Scalar(0));
   std::vector<cv::Point> vecs_displacement;
   std::vector<cv::Point> points_left;
@@ -613,17 +692,19 @@ void seperateAndFittingLanes(int num_centroids_last_frame, int num_centroids_thi
   cv::Point vec_average;
   cv::Point vec_sensor_orientation;
   cv::Point point_sensor_position(int(_birdview_width / 2), int(_birdview_height));
-  //trajectory prediction
+  //car trajectory prediction
   static bool first_velocity_vectors_frame_batch = true;
   static unsigned int velocity_vectors_frame_count = 0;
   const unsigned int velocity_vectors_buffer_size = 5;
   static cv::Point velocity_vectors_buffer[velocity_vectors_buffer_size];
   cv::Point predicted_trajectory[velocity_vectors_buffer_size];
+  
+  road_trajectory_prediction(centroids_filtered_buffer, centroids_filtered_buffer_size);
 
   //assign to left or right
   if (first_assignment_flag)
   {
-    cv::GaussianBlur(_filtered_mat_8UC1, _filteredAndBlurred_mat_8UC1, cv::Size(51, 51), 3, 3);
+
   }
   else
   {
@@ -635,14 +716,14 @@ void seperateAndFittingLanes(int num_centroids_last_frame, int num_centroids_thi
         {
           if (euclidean_distance(centroids_filtered_last_frame[row], centroids_filtered_this_frame[col]) < 100)
           {
-            if (!left_right_flag_last_frame[row])
-            {
-              left_right_flag_this_frame[col] = false;
-            }
-            else
-            {
-              left_right_flag_this_frame[col] = true;
-            }
+            // if (!left_right_flag_last_frame[row])
+            // {
+            //   left_right_flag_this_frame[col] = false;
+            // }
+            // else
+            // {
+            //   left_right_flag_this_frame[col] = true;
+            // }
             cv::line(_visual_linefitting_mat_8UC3, centroids_filtered_last_frame[row], centroids_filtered_this_frame[col], cv::Scalar(0, 0, 255));
             vecs_displacement.push_back(getDisplacementVector(centroids_filtered_this_frame[col], centroids_filtered_last_frame[row]));
           }
@@ -678,7 +759,7 @@ void seperateAndFittingLanes(int num_centroids_last_frame, int num_centroids_thi
       }
       if (!first_velocity_vectors_frame_batch)
       {
-        predictTrajectory(velocity_vectors_buffer, predicted_trajectory, velocity_vectors_buffer_size);
+        // predictTrajectory(velocity_vectors_buffer, predicted_trajectory, velocity_vectors_buffer_size);
       }
     }
 
@@ -742,12 +823,13 @@ void seperateAndFittingLanes(int num_centroids_last_frame, int num_centroids_thi
     //   }
     // }
     // lineIntersection();
+
     cv::line(_visual_linefitting_mat_8UC3, point_sensor_position, vec_sensor_orientation, cv::Scalar(255, 255, 255));
-    // char path[1000];
-    // static int count = 0;
-    // sprintf(path, "/home/autoware/shared_dir/debugfolder/%d.jpg", count);
-    // cv::imwrite(path, _visual_linefitting_mat_8UC3);
-    // count++;
+    char path[1000];
+    static int count = 0;
+    sprintf(path, "/home/autoware/shared_dir/debugfolder/%d.jpg", count);
+    cv::imwrite(path, _filteredAndBlurred_mat_8UC1);
+    count++;
   }
 }
 
@@ -766,6 +848,12 @@ void findLane(autoware_msgs::Centroids &in_centroids, int n)
   std::vector<cv::Point> centroids_filtered_this_frame;
   int num_centroids_filtered_this_frame;
 
+  //seperate
+  static const unsigned int centroids_filtered_buffer_size = 5;
+  static std::vector<cv::Point> centroids_filtered_buffer[centroids_filtered_buffer_size];
+  static bool first_centroids_filtered_buffer = true;
+  static unsigned int centroids_filtered_buffer_count = 0;
+
   if (!first_find_lane)
   {
     _track_mat_8UC1 = _track_mat_8UC1 & (cv::Scalar(0));
@@ -781,7 +869,7 @@ void findLane(autoware_msgs::Centroids &in_centroids, int n)
     filterCentroids(in_centroids, contours_filtered_this_frame, centroids_filtered_this_frame);
     num_centroids_filtered_this_frame = centroids_filtered_this_frame.size();
     // _visual_clear_flag = false;
-
+    centroids_filtered_buffer[centroids_filtered_buffer_count] = centroids_filtered_this_frame;
     if (state == 0)
     {
       if (num_centroids_filtered_this_frame > 1 && num_centroids_filtered_last_frame > 1)
@@ -802,13 +890,13 @@ void findLane(autoware_msgs::Centroids &in_centroids, int n)
     }
     else if (state == 2)
     {
-      if (num_centroids_filtered_this_frame > 1 && num_centroids_filtered_last_frame > 1)
+      if (num_centroids_filtered_this_frame > 1 && num_centroids_filtered_last_frame > 1 && !first_centroids_filtered_buffer)
       {
         ROS_INFO("yes");
         association_Mat = dataAssociation(num_centroids_filtered_last_frame, num_centroids_filtered_this_frame,
                                           centroids_filtered_last_frame, centroids_filtered_this_frame);
         seperateAndFittingLanes(num_centroids_filtered_last_frame, num_centroids_filtered_this_frame,
-                                centroids_filtered_last_frame, centroids_filtered_this_frame, association_Mat);
+                                centroids_filtered_last_frame, centroids_filtered_this_frame, association_Mat, centroids_filtered_buffer, centroids_filtered_buffer_size);
       }
       else if (num_centroids_filtered_this_frame == 0 || num_centroids_filtered_last_frame == 0)
       {
@@ -829,6 +917,13 @@ void findLane(autoware_msgs::Centroids &in_centroids, int n)
     ROS_INFO("%d", state);
     centroids_filtered_last_frame = centroids_filtered_this_frame;
     num_centroids_filtered_last_frame = num_centroids_filtered_this_frame;
+
+    centroids_filtered_buffer_count++;
+    if (centroids_filtered_buffer_count == centroids_filtered_buffer_size)
+    {
+      centroids_filtered_buffer_count = 0;
+      first_centroids_filtered_buffer = false;
+    }
   }
   else
   {
