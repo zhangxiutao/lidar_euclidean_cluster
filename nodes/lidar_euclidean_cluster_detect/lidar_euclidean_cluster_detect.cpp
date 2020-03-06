@@ -162,6 +162,7 @@ const int _img_buffer_size = 8;
 static int _frame_count = 0;
 static int _birdview_width = 1000;
 static int _birdview_height = 1000;
+static cv::Point _point_sensor_position(int(_birdview_width / 2), int(_birdview_height));
 static cv::Mat _birdview_buffer_8UC3[_img_buffer_size];
 static cv::Mat _track_mat_8UC1(_birdview_height, _birdview_width, CV_8UC1, cv::Scalar(0));
 static cv::Mat _filtered_mat_8UC1 = Mat::zeros(_track_mat_8UC1.size(), CV_8UC1); //for debugging(the image cannot be used to get information).
@@ -233,7 +234,7 @@ float angleBetween(const Point &v1, const Point &v2)
   }
 }
 
-double euclidean_distance(cv::Point &p1, cv::Point &p2)
+double euclidean_distance (cv::Point &p1, cv::Point &p2)
 {
   return sqrt((p1.x - p2.x) * (p1.x - p2.x) + (p1.y - p2.y) * (p1.y - p2.y));
 }
@@ -529,7 +530,7 @@ cv::Point calculateAveragePoint(std::vector<cv::Point> &in_points)
   return average_point;
 }
 
-void predictTrajectory(cv::Point *velocity_vectors, cv::Point *predicted_trajectory, const unsigned int velocity_vectors_buffer_size)
+cv::Point predictDirection(cv::Point *velocity_vectors, const unsigned int velocity_vectors_buffer_size)
 {
   tk::spline s;
   std::vector<double> control_points_x(velocity_vectors_buffer_size + 1), control_points_y(velocity_vectors_buffer_size + 1);
@@ -567,14 +568,7 @@ void predictTrajectory(cv::Point *velocity_vectors, cv::Point *predicted_traject
     cv::Point spline_point(int(s(y)), y);
     cv::circle(_visual_linefitting_mat_8UC3, spline_point, 1, Scalar(30, 255, 30), 1, CV_AA);
   }
-  // for(int i=-50; i<250; i++) {
-  //   double x=0.01*i;
-  //   printf("%f %f %f %f %f\n", x, s(x),
-  //           s.deriv(1,x), s.deriv(2,x), s.deriv(3,x));
-  //   // checking analytic derivatives and finite differences are close
-  //   assert(fabs(s.deriv(1,x)-deriv1(s,x)) < 1e-8);
-  //   assert(fabs(s.deriv(2,x)-deriv2(s,x)) < 1e-8);
-  // }
+  return cv::Point(int(s(0)), 0);
 }
 
 unsigned int votingFindVelocityVector(const std::vector<cv::Point> &in_vecs)
@@ -594,30 +588,10 @@ unsigned int votingFindVelocityVector(const std::vector<cv::Point> &in_vecs)
   return std::distance(scores.begin(), std::max_element(scores.begin(), scores.end()));
 }
 
-void road_trajectory_prediction(std::vector<cv::Point>* centroids_filtered_buffer, const unsigned int centroids_filtered_buffer_size)
+void getContoursCenter(std::vector<std::vector<cv::Point>>& contours, std::vector<cv::Point>& mc)
 {
-  std::vector<std::vector<cv::Point>> contours;
-  std::vector<cv::Vec4i> hierarchy;
-  // static std::vector<bool> left_right_flag_last_frame(num_centroids_last_frame); //false-left true-right
-  // static std::vector<bool> left_right_flag_this_frame(num_centroids_this_frame);
-
-  _filteredAndBlurred_mat_8UC1 = _filteredAndBlurred_mat_8UC1 & (cv::Scalar(0));
-
-  for (unsigned int i = 0; i < centroids_filtered_buffer_size; i++)
-  {
-    for (std::vector<cv::Point>::size_type j = 0; j != centroids_filtered_buffer[i].size(); j++)
-    {
-      cv::circle(_filteredAndBlurred_mat_8UC1, centroids_filtered_buffer[i][j], 15, Scalar(255), 2, CV_AA);
-    }
-  }
-
-  //road trajectory prediction
-  cv::GaussianBlur(_filteredAndBlurred_mat_8UC1, _filteredAndBlurred_mat_8UC1, cv::Size(201, 201), 10, 50);
-  cv::threshold(_filteredAndBlurred_mat_8UC1, _filteredAndBlurred_mat_8UC1, 0, 255, CV_THRESH_BINARY);
-  cv::findContours(_filteredAndBlurred_mat_8UC1, contours, hierarchy, CV_RETR_TREE, CV_CHAIN_APPROX_SIMPLE, Point(0, 0));
-
   std::vector<cv::Moments> mu(contours.size());
-  std::vector<cv::Point2f> mc(contours.size());
+  mc = std::vector<cv::Point>(contours.size());
 
   for (int i = 0; i < contours.size(); i++)
   {
@@ -628,15 +602,62 @@ void road_trajectory_prediction(std::vector<cv::Point>* centroids_filtered_buffe
     ///  Get the mass centers:
     for(int i = 0; i < contours.size(); i++)
     { 
-      mc[i] = Point2f(mu[i].m10/mu[i].m00 , mu[i].m01/mu[i].m00);
+      mc[i] = Point(mu[i].m10/mu[i].m00 , mu[i].m01/mu[i].m00);
+    }
+  }
+}
+
+void buildLocalMapAndPredictCollision(std::vector<cv::Point>* centroids_filtered_buffer, const unsigned int centroids_filtered_buffer_size,
+const unsigned int centroids_filtered_buffer_count, cv::Point* velocity_vectors_buffer, const unsigned int velocity_vectors_buffer_size,
+const unsigned int velocity_vectors_buffer_count)
+{
+  //calculate local map
+  //(centroids_filtered_buffer_count - i + centroids_filtered_buffer_size)%centroids_filtered_buffer_size ex:2(count) 1 0 4 3
+  //actually the centroids_filtered_buffer_size shoud be equal to velocity_vectors_buffer_size
+  std::vector<cv::Point> centroids_filtered_rollbacked_buffer[centroids_filtered_buffer_size];
+  for (unsigned int i = 0; i < centroids_filtered_buffer_size; i++)
+  {
+    for (unsigned int j = 0; j < centroids_filtered_buffer[(centroids_filtered_buffer_count - i  + centroids_filtered_buffer_size) % centroids_filtered_buffer_size].size(); j++)
+    {
+      for (unsigned int k = i; k < velocity_vectors_buffer_size; k++) //(velocity_vectors_buffer_size - i): 5 4 3 2 1 
+      {
+        //k: 4 3 2 1 0, 4 3 2 1, 4 3 2, 4 3, 4       0 is the newest
+        //(velocity_vectors_buffer_count - k + centroids_filtered_buffer_size) % centroids_filtered_buffer_size:
+        //
+        centroids_filtered_rollbacked_buffer[i].push_back(
+          cv::Point(centroids_filtered_buffer[(centroids_filtered_buffer_count - i + centroids_filtered_buffer_size) % centroids_filtered_buffer_size][j]
+        + velocity_vectors_buffer[(velocity_vectors_buffer_count - k + centroids_filtered_buffer_size) % centroids_filtered_buffer_size]));
+      }
+    }
+    
+  }
+
+  std::vector<std::vector<cv::Point>> contours_boundaries;
+  std::vector<cv::Point> mc_boundaries;
+  std::vector<cv::Vec4i> hierarchy_boundaries;
+
+  _filteredAndBlurred_mat_8UC1 = _filteredAndBlurred_mat_8UC1 & (cv::Scalar(0));
+
+  for (unsigned int i = 0; i < centroids_filtered_buffer_size; i++)
+  {
+    for (std::vector<cv::Point>::size_type j = 0; j != centroids_filtered_rollbacked_buffer[i].size(); j++)
+    {
+      cv::circle(_filteredAndBlurred_mat_8UC1, centroids_filtered_rollbacked_buffer[i][j], 5, Scalar(255), 2, CV_AA);
     }
   }
 
+  //get boundaries
+  cv::GaussianBlur(_filteredAndBlurred_mat_8UC1, _filteredAndBlurred_mat_8UC1, cv::Size(201, 201), 10, 50);
+  cv::threshold(_filteredAndBlurred_mat_8UC1, _filteredAndBlurred_mat_8UC1, 0, 255, CV_THRESH_BINARY);
+  cv::findContours(_filteredAndBlurred_mat_8UC1, contours_boundaries, hierarchy_boundaries, CV_RETR_TREE, CV_CHAIN_APPROX_SIMPLE, Point(0, 0));
+
+  getContoursCenter(contours_boundaries, mc_boundaries);
+
   std::vector<unsigned int> centroids_left_idx;
   std::vector<unsigned int> centroids_right_idx;
-  for (std::vector<cv::Point>::size_type i = 0; i != mc.size(); i++)
+  for (std::vector<cv::Point>::size_type i = 0; i != mc_boundaries.size(); i++)
   {
-    if (mc[i].x < _birdview_width / 2)
+    if (mc_boundaries[i].x < _birdview_width / 2)
     {
       centroids_left_idx.push_back(i);
     }
@@ -650,36 +671,65 @@ void road_trajectory_prediction(std::vector<cv::Point>* centroids_filtered_buffe
     unsigned int nearest_index_left = centroids_left_idx[0];
     for (std::vector<cv::Point>::size_type i = 0; i != centroids_left_idx.size(); i++)
     {
-      if ((_birdview_width/2 - mc[centroids_left_idx[i]].x) < (_birdview_width/2 - mc[nearest_index_left].x))
+      if ((_birdview_width/2 - mc_boundaries[centroids_left_idx[i]].x) < (_birdview_width/2 - mc_boundaries[nearest_index_left].x))
       {
         nearest_index_left = centroids_left_idx[i];
       }
     }
-    cv::circle(_filteredAndBlurred_mat_8UC1, mc[nearest_index_left], 15, Scalar(0), 2, CV_AA);
+    cv::circle(_filteredAndBlurred_mat_8UC1, mc_boundaries[nearest_index_left], 15, Scalar(0), 2, CV_AA);
   }
   if (!centroids_right_idx.empty())
   {
     unsigned int nearest_index_right = centroids_right_idx[0];
     for (std::vector<cv::Point>::size_type i = 0; i != centroids_right_idx.size(); i++)
     {
-      if ((mc[centroids_right_idx[i]].x - _birdview_width/2) < (mc[nearest_index_right].x - _birdview_width/2))
+      if ((mc_boundaries[centroids_right_idx[i]].x - _birdview_width/2) < (mc_boundaries[nearest_index_right].x - _birdview_width/2))
       {
         nearest_index_right = centroids_right_idx[i];
       }
     }
-    cv::circle(_filteredAndBlurred_mat_8UC1, mc[nearest_index_right], 5, Scalar(0), 2, CV_AA);
+    cv::circle(_filteredAndBlurred_mat_8UC1, mc_boundaries[nearest_index_right], 5, Scalar(0), 2, CV_AA);
+  }
+
+  //predict car driving direction
+  cv::Point predicted_direction;
+  cv::Mat driving_direction_mat_8UC1  = Mat::zeros(_filteredAndBlurred_mat_8UC1.size(), CV_8UC1);
+  std::vector<std::vector<cv::Point>> contour_driving_direction;
+  std::vector<cv::Vec4i> hierarchy_driving_direction;
+  std::vector<cv::Point> mc_collision_point;
+  const double collision_distance_threshold = 200;
+  predicted_direction = predictDirection(velocity_vectors_buffer, velocity_vectors_buffer_size);
+  cv::line(driving_direction_mat_8UC1, _point_sensor_position, predicted_direction, cv::Scalar(255), 30);
+  driving_direction_mat_8UC1 = driving_direction_mat_8UC1 & _filteredAndBlurred_mat_8UC1;
+  cv::findContours(driving_direction_mat_8UC1, contour_driving_direction, hierarchy_driving_direction, CV_RETR_TREE, CV_CHAIN_APPROX_SIMPLE, Point(0, 0));
+  getContoursCenter(contour_driving_direction, mc_collision_point);
+
+  char path1[1000];
+  char path2[1000];
+  static int count = 0;
+  sprintf(path1, "/home/autoware/shared_dir/debugfolder/%d.jpg", count);
+  sprintf(path2, "/home/autoware/shared_dir/debugfolder/%dbound.jpg", count);
+  cv::imwrite(path1, driving_direction_mat_8UC1);
+  cv::imwrite(path2, _filteredAndBlurred_mat_8UC1);
+  count++;
+
+  assert(mc_collision_point.size() <= 1);
+  if (!mc_collision_point.empty())
+  {
+    if (euclidean_distance(mc_collision_point[0], _point_sensor_position) <= collision_distance_threshold)
+    {
+      cv::putText(_filteredAndBlurred_mat_8UC1, std::string("warning!"), cv::Point(100, 100),  FONT_HERSHEY_SIMPLEX, 3, Scalar(255));
+    }
   }
 }
 
-void seperateAndFittingLanes(int num_centroids_last_frame, int num_centroids_this_frame,
+void collisionWarning(int num_centroids_last_frame, int num_centroids_this_frame,
                              std::vector<cv::Point> &centroids_filtered_last_frame, std::vector<cv::Point> &centroids_filtered_this_frame,
-                             Matrix<double> &association_Mat, std::vector<cv::Point>* centroids_filtered_buffer, const unsigned int centroids_filtered_buffer_size)
+                             Matrix<double> &association_Mat, std::vector<cv::Point>* centroids_filtered_buffer, const unsigned int centroids_filtered_buffer_size, const unsigned int centroids_filtered_buffer_count)
 {
-
   static float control_points[_img_buffer_size];
-  static cv::Point vec_average_last;
-  static bool first_vec_average_flag = true;
-  static bool first_assignment_flag = true;
+  static cv::Point vec_car_last;
+  static bool first_vec_car_flag = true;
 
 
 
@@ -689,91 +739,79 @@ void seperateAndFittingLanes(int num_centroids_last_frame, int num_centroids_thi
   std::vector<cv::Point> points_left_last;
   std::vector<cv::Point> points_right;
   std::vector<cv::Point> points_right_last;
-  cv::Point vec_average;
+  cv::Point vec_car;
   cv::Point vec_sensor_orientation;
-  cv::Point point_sensor_position(int(_birdview_width / 2), int(_birdview_height));
   //car trajectory prediction
   static bool first_velocity_vectors_frame_batch = true;
-  static unsigned int velocity_vectors_frame_count = 0;
+  static unsigned int velocity_vectors_buffer_count = 0;
   const unsigned int velocity_vectors_buffer_size = 5;
   static cv::Point velocity_vectors_buffer[velocity_vectors_buffer_size];
-  cv::Point predicted_trajectory[velocity_vectors_buffer_size];
   
-  road_trajectory_prediction(centroids_filtered_buffer, centroids_filtered_buffer_size);
 
-  //assign to left or right
-  if (first_assignment_flag)
-  {
 
-  }
-  else
+  //calculate the displacements of leitbakes between this frame and last frame
+  for (int row = 0; row < num_centroids_last_frame; row++)
   {
-    for (int row = 0; row < num_centroids_last_frame; row++)
+    for (int col = 0; col < num_centroids_this_frame; col++)
     {
-      for (int col = 0; col < num_centroids_this_frame; col++)
+      if (association_Mat(row, col) == 0)
       {
-        if (association_Mat(row, col) == 0)
+        if (euclidean_distance(centroids_filtered_last_frame[row], centroids_filtered_this_frame[col]) < 100)
         {
-          if (euclidean_distance(centroids_filtered_last_frame[row], centroids_filtered_this_frame[col]) < 100)
-          {
-            // if (!left_right_flag_last_frame[row])
-            // {
-            //   left_right_flag_this_frame[col] = false;
-            // }
-            // else
-            // {
-            //   left_right_flag_this_frame[col] = true;
-            // }
-            cv::line(_visual_linefitting_mat_8UC3, centroids_filtered_last_frame[row], centroids_filtered_this_frame[col], cv::Scalar(0, 0, 255));
-            vecs_displacement.push_back(getDisplacementVector(centroids_filtered_this_frame[col], centroids_filtered_last_frame[row]));
-          }
+          cv::line(_visual_linefitting_mat_8UC3, centroids_filtered_last_frame[row], centroids_filtered_this_frame[col], cv::Scalar(0, 0, 255));
+          vecs_displacement.push_back(getDisplacementVector(centroids_filtered_this_frame[col], centroids_filtered_last_frame[row]));
         }
       }
     }
   }
-  first_assignment_flag = false;
+
   //calculate vehicle velocity
   if (!vecs_displacement.empty()) //sometimes vecs_displacement is empty(no matching)
   {
-    if (first_vec_average_flag) //what if at the first frame we have wrongly matched?
+    if (first_vec_car_flag) //what if at the first frame we have wrongly matched?
     {
-      // vec_average_last = calculateAveragePoint(vecs_displacement); //average
-      vec_average = vecs_displacement[votingFindVelocityVector(vecs_displacement)]; //voting
-      vec_average_last = vec_average;
-      first_vec_average_flag = false;
+      // vec_car_last = calculateAveragePoint(vecs_displacement); //average
+      vec_car = vecs_displacement[votingFindVelocityVector(vecs_displacement)]; //voting
+      if (vec_car.y != 0) //prevent spline fitting from crashing
+      {
+        velocity_vectors_buffer[velocity_vectors_buffer_count] = vec_car;
+        velocity_vectors_buffer_count++;
+      }      
+      vec_car_last = vec_car;
+      first_vec_car_flag = false;
     }
     else
     {
-      // vec_average = calculateAveragePoint(vecs_displacement); //average
-      vec_average = vecs_displacement[votingFindVelocityVector(vecs_displacement)]; //voting
-      float angle_varied = angleBetween(vec_average_last, vec_average);
+      // vec_car = calculateAveragePoint(vecs_displacement); //average
+      vec_car = vecs_displacement[votingFindVelocityVector(vecs_displacement)]; //voting
+      float angle_varied = angleBetween(vec_car_last, vec_car);
       if (angle_varied >= (CV_PI / 4)) //45 degrees difference between frames should not be larget than 15 degrees
       {
-        vec_average = vec_average_last;
+        vec_car = vec_car_last;
       }
-      vec_average_last = vec_average;
-      if (vec_average.y != 0) //prevent spline fitting from crashing
+      vec_car_last = vec_car;
+      if (vec_car.y != 0) //prevent spline fitting from crashing
       {
-        velocity_vectors_buffer[velocity_vectors_frame_count] = vec_average;
-        velocity_vectors_frame_count++;
-      }
-      if (!first_velocity_vectors_frame_batch)
-      {
-        // predictTrajectory(velocity_vectors_buffer, predicted_trajectory, velocity_vectors_buffer_size);
+        velocity_vectors_buffer[velocity_vectors_buffer_count] = vec_car;
+        velocity_vectors_buffer_count++;
       }
     }
 
-    if (velocity_vectors_frame_count == velocity_vectors_buffer_size)
+    if (velocity_vectors_buffer_count == velocity_vectors_buffer_size)
     {
       first_velocity_vectors_frame_batch = false;
-      velocity_vectors_frame_count = 0;
+      velocity_vectors_buffer_count = 0;
     }
 
-    vec_sensor_orientation.x = 1000 * vec_average.x + point_sensor_position.x;
-    vec_sensor_orientation.y = 1000 * vec_average.y + point_sensor_position.y;
+    if (!first_velocity_vectors_frame_batch) //if velocity buffer is full, centroids buffer is already full when entered this function
+    {
+      buildLocalMapAndPredictCollision(centroids_filtered_buffer, centroids_filtered_buffer_size, centroids_filtered_buffer_count, velocity_vectors_buffer, velocity_vectors_buffer_size, velocity_vectors_buffer_count);
+    }
+    vec_sensor_orientation.x = 1000 * vec_car.x + _point_sensor_position.x;
+    vec_sensor_orientation.y = 1000 * vec_car.y + _point_sensor_position.y;
     // for (auto centroid : centroids_filtered_this_frame)
     // {
-    //   if ((centroid.x * vec_average.y - vec_average.x * centroid.y + vec_average.x * point_sensor_position.y - point_sensor_position.x * vec_average.y) > 0)
+    //   if ((centroid.x * vec_car.y - vec_car.x * centroid.y + vec_car.x * _point_sensor_position.y - _point_sensor_position.x * vec_car.y) > 0)
     //   {
     //     points_left.push_back(centroid);
     //     cv::circle(_visual_linefitting_mat_8UC3, centroid, 15, Scalar(0, 255, 0), 2, CV_AA);
@@ -787,7 +825,7 @@ void seperateAndFittingLanes(int num_centroids_last_frame, int num_centroids_thi
 
     // for (auto centroid : centroids_filtered_last_frame)
     // {
-    //   if ((centroid.x * vec_average.y - vec_average.x * centroid.y + vec_average.x * point_sensor_position.y - point_sensor_position.x * vec_average.y) > 0)
+    //   if ((centroid.x * vec_car.y - vec_car.x * centroid.y + vec_car.x * _point_sensor_position.y - _point_sensor_position.x * vec_car.y) > 0)
     //   {
     //     points_left_last.push_back(centroid);
     //     cv::circle(_visual_linefitting_mat_8UC3, centroid, 15, Scalar(0, 100, 0), 2, CV_AA);
@@ -824,12 +862,12 @@ void seperateAndFittingLanes(int num_centroids_last_frame, int num_centroids_thi
     // }
     // lineIntersection();
 
-    cv::line(_visual_linefitting_mat_8UC3, point_sensor_position, vec_sensor_orientation, cv::Scalar(255, 255, 255));
-    char path[1000];
-    static int count = 0;
-    sprintf(path, "/home/autoware/shared_dir/debugfolder/%d.jpg", count);
-    cv::imwrite(path, _filteredAndBlurred_mat_8UC1);
-    count++;
+    // cv::line(_visual_linefitting_mat_8UC3, _point_sensor_position, vec_sensor_orientation, cv::Scalar(255, 255, 255));
+    // char path[1000];
+    // static int count = 0;
+    // sprintf(path, "/home/autoware/shared_dir/debugfolder/%d.jpg", count);
+    // cv::imwrite(path, _filteredAndBlurred_mat_8UC1);
+    // count++;
   }
 }
 
@@ -895,8 +933,8 @@ void findLane(autoware_msgs::Centroids &in_centroids, int n)
         ROS_INFO("yes");
         association_Mat = dataAssociation(num_centroids_filtered_last_frame, num_centroids_filtered_this_frame,
                                           centroids_filtered_last_frame, centroids_filtered_this_frame);
-        seperateAndFittingLanes(num_centroids_filtered_last_frame, num_centroids_filtered_this_frame,
-                                centroids_filtered_last_frame, centroids_filtered_this_frame, association_Mat, centroids_filtered_buffer, centroids_filtered_buffer_size);
+        collisionWarning(num_centroids_filtered_last_frame, num_centroids_filtered_this_frame,
+                                centroids_filtered_last_frame, centroids_filtered_this_frame, association_Mat, centroids_filtered_buffer, centroids_filtered_buffer_size, centroids_filtered_buffer_count);
       }
       else if (num_centroids_filtered_this_frame == 0 || num_centroids_filtered_last_frame == 0)
       {
@@ -929,7 +967,9 @@ void findLane(autoware_msgs::Centroids &in_centroids, int n)
   {
     findAndGetFilteredContours(contours_filtered_last_frame);
     filterCentroids(in_centroids, contours_filtered_last_frame, centroids_filtered_last_frame);
-    num_centroids_filtered_last_frame = contours_filtered_last_frame.size();
+    num_centroids_filtered_last_frame = centroids_filtered_last_frame.size();
+    centroids_filtered_buffer[centroids_filtered_buffer_count] = centroids_filtered_last_frame;
+    centroids_filtered_buffer_count++;
     first_find_lane = false;
   }
 }
