@@ -11,7 +11,7 @@
   <arg name="pose_estimation" default="true" />
   <arg name="clip_min_height" default="-0.3" />
   <arg name="clip_max_height" default="0.5" />
-
+  <arg name="simulation" default="false" />
   <arg name="keep_lanes" default="false" />
   <arg name="keep_lane_left_distance" default="3" />
   <arg name="keep_lane_right_distance" default="3" />

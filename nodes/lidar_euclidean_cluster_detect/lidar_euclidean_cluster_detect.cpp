@@ -153,7 +153,7 @@ tf::TransformListener *_transform_listener;
 tf::TransformListener *_vectormap_transform_listener;
 
 //image
-static bool _simulation = true;
+static bool _simulation = false;
 static bool _intensity_filter;
 static bool _first_frame_batches = true;
 static int _visual_clear_flag = false;
@@ -166,7 +166,8 @@ static cv::Point _point_sensor_position(int(_birdview_width / 2), int(_birdview_
 static cv::Mat _birdview_buffer_8UC3[_img_buffer_size];
 static cv::Mat _track_mat_8UC1(_birdview_height, _birdview_width, CV_8UC1, cv::Scalar(0));
 static cv::Mat _filtered_mat_8UC1 = Mat::zeros(_track_mat_8UC1.size(), CV_8UC1); //for debugging(the image cannot be used to get information).
-static cv::Mat _filteredAndBlurred_mat_8UC1 = Mat::zeros(_track_mat_8UC1.size(), CV_8UC1);
+static cv::Mat _filtered_blurred_mat_8UC1 = Mat::zeros(_track_mat_8UC1.size(), CV_8UC1);
+static cv::Mat _filtered_boundaries_mat_8UC1 = Mat::zeros(_track_mat_8UC1.size(), CV_8UC1);
 static cv::Mat _coeffient_linefitting_mat_64F;
 static cv::Mat _visual_linefitting_mat_8UC3 = Mat::zeros(1500, 1000, CV_8UC3);
 
@@ -421,7 +422,7 @@ void visualizeFitting(autoware_msgs::Centroids &in_centroids, int n)
   cv::imshow("_filtered_mat_8UC1", _filtered_mat_8UC1);
   cv::imshow("_visual_linefitting_mat_8UC3", resized_mat);
   cv::imshow("_track_mat_8UC1", _track_mat_8UC1);
-  cv::imshow("_filteredAndBlurred_mat_8UC1", _filteredAndBlurred_mat_8UC1);
+  cv::imshow("_filtered_blurred_mat_8UC1", _filtered_blurred_mat_8UC1);
 }
 
 void outlierRemoval(const pcl::PointCloud<pcl::PointXYZ>::Ptr in_cloud_ptr,
@@ -615,49 +616,45 @@ const unsigned int velocity_vectors_buffer_count)
   //(centroids_filtered_buffer_count - i + centroids_filtered_buffer_size)%centroids_filtered_buffer_size ex:2(count) 1 0 4 3
   //actually the centroids_filtered_buffer_size shoud be equal to velocity_vectors_buffer_size
   std::vector<cv::Point> centroids_filtered_rollbacked_buffer[centroids_filtered_buffer_size];
-  for (unsigned int i = 0; i < centroids_filtered_buffer_size; i++)
+  for (unsigned int i = 0; i < centroids_filtered_buffer_size; i++) //frame
   {
-    for (unsigned int j = 0; j < centroids_filtered_buffer[(centroids_filtered_buffer_count - i  + centroids_filtered_buffer_size) % centroids_filtered_buffer_size].size(); j++)
-    {
-      for (unsigned int k = i; k < velocity_vectors_buffer_size; k++) //(velocity_vectors_buffer_size - i): 5 4 3 2 1 
-      {
-        //k: 4 3 2 1 0, 4 3 2 1, 4 3 2, 4 3, 4       0 is the newest
-        //(velocity_vectors_buffer_count - k + centroids_filtered_buffer_size) % centroids_filtered_buffer_size:
-        //
+    for (unsigned int j = 0; j < centroids_filtered_buffer[(centroids_filtered_buffer_count - i + centroids_filtered_buffer_size) % centroids_filtered_buffer_size].size(); j++)
+    { //points in frame
+      for (unsigned int k = velocity_vectors_buffer_count; k != (velocity_vectors_buffer_count - i - 1 + velocity_vectors_buffer_size) % velocity_vectors_buffer_size; k = (k - 1 - i + centroids_filtered_buffer_size) % centroids_filtered_buffer_size)
+      {//start point and end point in velocity buffer. start point is always the newst velocity
         centroids_filtered_rollbacked_buffer[i].push_back(
           cv::Point(centroids_filtered_buffer[(centroids_filtered_buffer_count - i + centroids_filtered_buffer_size) % centroids_filtered_buffer_size][j]
-        + velocity_vectors_buffer[(velocity_vectors_buffer_count - k + centroids_filtered_buffer_size) % centroids_filtered_buffer_size]));
+        - velocity_vectors_buffer[k]));
       }
     }
-    
   }
 
   std::vector<std::vector<cv::Point>> contours_boundaries;
-  std::vector<cv::Point> mc_boundaries;
+  std::vector<cv::Point> center_boundaries;
   std::vector<cv::Vec4i> hierarchy_boundaries;
 
-  _filteredAndBlurred_mat_8UC1 = _filteredAndBlurred_mat_8UC1 & (cv::Scalar(0));
+  _filtered_blurred_mat_8UC1 = _filtered_blurred_mat_8UC1 & (cv::Scalar(0));
 
   for (unsigned int i = 0; i < centroids_filtered_buffer_size; i++)
   {
     for (std::vector<cv::Point>::size_type j = 0; j != centroids_filtered_rollbacked_buffer[i].size(); j++)
     {
-      cv::circle(_filteredAndBlurred_mat_8UC1, centroids_filtered_rollbacked_buffer[i][j], 5, Scalar(255), 2, CV_AA);
+      cv::circle(_filtered_blurred_mat_8UC1, centroids_filtered_rollbacked_buffer[i][j], 5, Scalar(255), 2, CV_AA);
     }
   }
 
   //get boundaries
-  cv::GaussianBlur(_filteredAndBlurred_mat_8UC1, _filteredAndBlurred_mat_8UC1, cv::Size(201, 201), 10, 50);
-  cv::threshold(_filteredAndBlurred_mat_8UC1, _filteredAndBlurred_mat_8UC1, 0, 255, CV_THRESH_BINARY);
-  cv::findContours(_filteredAndBlurred_mat_8UC1, contours_boundaries, hierarchy_boundaries, CV_RETR_TREE, CV_CHAIN_APPROX_SIMPLE, Point(0, 0));
+  cv::GaussianBlur(_filtered_blurred_mat_8UC1, _filtered_blurred_mat_8UC1, cv::Size(201, 201), 10, 50);
+  cv::threshold(_filtered_blurred_mat_8UC1, _filtered_blurred_mat_8UC1, 0, 255, CV_THRESH_BINARY);
+  cv::findContours(_filtered_blurred_mat_8UC1, contours_boundaries, hierarchy_boundaries, CV_RETR_TREE, CV_CHAIN_APPROX_SIMPLE, Point(0, 0));
 
-  getContoursCenter(contours_boundaries, mc_boundaries);
+  getContoursCenter(contours_boundaries, center_boundaries);
 
   std::vector<unsigned int> centroids_left_idx;
   std::vector<unsigned int> centroids_right_idx;
-  for (std::vector<cv::Point>::size_type i = 0; i != mc_boundaries.size(); i++)
+  for (std::vector<cv::Point>::size_type i = 0; i != center_boundaries.size(); i++)
   {
-    if (mc_boundaries[i].x < _birdview_width / 2)
+    if (center_boundaries[i].x < _birdview_width / 2)
     {
       centroids_left_idx.push_back(i);
     }
@@ -666,61 +663,70 @@ const unsigned int velocity_vectors_buffer_count)
       centroids_right_idx.push_back(i);
     }
   }
+  _filtered_boundaries_mat_8UC1 = _filtered_boundaries_mat_8UC1 & (cv::Scalar(0));
   if (!centroids_left_idx.empty())
   {
     unsigned int nearest_index_left = centroids_left_idx[0];
     for (std::vector<cv::Point>::size_type i = 0; i != centroids_left_idx.size(); i++)
     {
-      if ((_birdview_width/2 - mc_boundaries[centroids_left_idx[i]].x) < (_birdview_width/2 - mc_boundaries[nearest_index_left].x))
+      if ((_birdview_width/2 - center_boundaries[centroids_left_idx[i]].x) < (_birdview_width/2 - center_boundaries[nearest_index_left].x))
       {
         nearest_index_left = centroids_left_idx[i];
       }
     }
-    cv::circle(_filteredAndBlurred_mat_8UC1, mc_boundaries[nearest_index_left], 15, Scalar(0), 2, CV_AA);
+    cv::drawContours(_filtered_boundaries_mat_8UC1, contours_boundaries, nearest_index_left, cv::Scalar(255), CV_FILLED);
+    cv::circle(_filtered_blurred_mat_8UC1, center_boundaries[nearest_index_left], 15, Scalar(0), 2, CV_AA);
   }
   if (!centroids_right_idx.empty())
   {
     unsigned int nearest_index_right = centroids_right_idx[0];
     for (std::vector<cv::Point>::size_type i = 0; i != centroids_right_idx.size(); i++)
     {
-      if ((mc_boundaries[centroids_right_idx[i]].x - _birdview_width/2) < (mc_boundaries[nearest_index_right].x - _birdview_width/2))
+      if ((center_boundaries[centroids_right_idx[i]].x - _birdview_width/2) < (center_boundaries[nearest_index_right].x - _birdview_width/2))
       {
         nearest_index_right = centroids_right_idx[i];
       }
     }
-    cv::circle(_filteredAndBlurred_mat_8UC1, mc_boundaries[nearest_index_right], 5, Scalar(0), 2, CV_AA);
+    cv::drawContours(_filtered_boundaries_mat_8UC1, contours_boundaries, nearest_index_right, cv::Scalar(255), CV_FILLED);
+    cv::circle(_filtered_blurred_mat_8UC1, center_boundaries[nearest_index_right], 5, Scalar(0), 2, CV_AA);
   }
 
   //predict car driving direction
   cv::Point predicted_direction;
-  cv::Mat driving_direction_mat_8UC1  = Mat::zeros(_filteredAndBlurred_mat_8UC1.size(), CV_8UC1);
+  cv::Mat driving_direction_mat_8UC1 = Mat::zeros(_filtered_boundaries_mat_8UC1.size(), CV_8UC1);
+  cv::Mat temp_driving_direction_mat_8UC1 = Mat::zeros(_filtered_boundaries_mat_8UC1.size(), CV_8UC1);
+
   std::vector<std::vector<cv::Point>> contour_driving_direction;
   std::vector<cv::Vec4i> hierarchy_driving_direction;
-  std::vector<cv::Point> mc_collision_point;
-  const double collision_distance_threshold = 200;
+  std::vector<cv::Point> center_collision_contours;
+  const double collision_distance_threshold = 300;
   predicted_direction = predictDirection(velocity_vectors_buffer, velocity_vectors_buffer_size);
-  cv::line(driving_direction_mat_8UC1, _point_sensor_position, predicted_direction, cv::Scalar(255), 30);
-  driving_direction_mat_8UC1 = driving_direction_mat_8UC1 & _filteredAndBlurred_mat_8UC1;
+  cv::line(driving_direction_mat_8UC1, _point_sensor_position, predicted_direction, cv::Scalar(255), 15);
+  cv::line(temp_driving_direction_mat_8UC1, _point_sensor_position, predicted_direction, cv::Scalar(255), 15);
+  driving_direction_mat_8UC1 = driving_direction_mat_8UC1 & _filtered_boundaries_mat_8UC1;
   cv::findContours(driving_direction_mat_8UC1, contour_driving_direction, hierarchy_driving_direction, CV_RETR_TREE, CV_CHAIN_APPROX_SIMPLE, Point(0, 0));
-  getContoursCenter(contour_driving_direction, mc_collision_point);
-
+  getContoursCenter(contour_driving_direction, center_collision_contours);
+  cv::Point sum_points = std::accumulate(center_collision_contours.begin(), center_collision_contours.end(), cv::Point(0, 0));
+  cv::Point average_collision_point = cv::Point(sum_points.x / center_collision_contours.size(), sum_points.y / center_collision_contours.size());
+  
+  if (!center_collision_contours.empty())
+  {
+    if (euclidean_distance(average_collision_point, _point_sensor_position) <= collision_distance_threshold)
+    {
+      cv::putText(_filtered_boundaries_mat_8UC1, std::string("warning!"), cv::Point(100, 100),  FONT_HERSHEY_SIMPLEX, 3, Scalar(255));
+    }
+  }
   char path1[1000];
   char path2[1000];
   static int count = 0;
   sprintf(path1, "/home/autoware/shared_dir/debugfolder/%d.jpg", count);
   sprintf(path2, "/home/autoware/shared_dir/debugfolder/%dbound.jpg", count);
-  cv::imwrite(path1, driving_direction_mat_8UC1);
-  cv::imwrite(path2, _filteredAndBlurred_mat_8UC1);
+  cv::imwrite(path1, temp_driving_direction_mat_8UC1);
+  cv::imwrite(path2, _filtered_boundaries_mat_8UC1);
   count++;
 
-  assert(mc_collision_point.size() <= 1);
-  if (!mc_collision_point.empty())
-  {
-    if (euclidean_distance(mc_collision_point[0], _point_sensor_position) <= collision_distance_threshold)
-    {
-      cv::putText(_filteredAndBlurred_mat_8UC1, std::string("warning!"), cv::Point(100, 100),  FONT_HERSHEY_SIMPLEX, 3, Scalar(255));
-    }
-  }
+  // assert(center_collision_contours.size() <= 1);
+
 }
 
 void collisionWarning(int num_centroids_last_frame, int num_centroids_this_frame,
@@ -866,7 +872,7 @@ void collisionWarning(int num_centroids_last_frame, int num_centroids_this_frame
     // char path[1000];
     // static int count = 0;
     // sprintf(path, "/home/autoware/shared_dir/debugfolder/%d.jpg", count);
-    // cv::imwrite(path, _filteredAndBlurred_mat_8UC1);
+    // cv::imwrite(path, _filtered_blurred_mat_8UC1);
     // count++;
   }
 }

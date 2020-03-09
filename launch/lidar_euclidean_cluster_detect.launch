@@ -1,5 +1,7 @@
 <!-- -->
 <launch>
+
+  <arg name="simulation" default="false" />
   <arg name="points_node" default="/points_raw" /><!--CHANGE THIS TO READ WHETHER FROM VSCAN OR POINTS_RAW -->
   <arg name="remove_ground" default="false" />
   <arg name="downsample_cloud" default="true" /> <!-- Apply VoxelGrid Filter with the value given by "leaf_size"-->
@@ -12,7 +14,8 @@
   <arg name="clip_min_height" default="-1.3" />
   <arg name="clip_max_height" default="1.0" />
   <arg name="intensity_filter" default="true" />
-
+  
+  
   <arg name="keep_lanes" default="true" />
   <arg name="keep_lane_left_distance" default="5" />
   <arg name="keep_lane_right_distance" default="5" />
@@ -38,6 +41,7 @@
   <node pkg="lidar_euclidean_cluster_detect" type="lidar_euclidean_cluster_detect"
         name="lidar_euclidean_cluster_detect" output="screen">
     <!-- launch-prefix="terminator -x gdb" -->
+    <param name="simulation" value="$(arg simulation)"/>    
     <param name="intensity_filter" value="$(arg intensity_filter)"/>
     <param name="points_node"
            value="$(arg points_node)"/> <!-- Can be used to select which pointcloud node will be used as input for the clustering -->
